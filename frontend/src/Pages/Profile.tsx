@@ -47,6 +47,8 @@ import {
   Pen,
   X,
   Image as ImageIcon,
+  Loader2,
+  Upload,
   ChevronRight,
   Flame,
 } from "lucide-react";
@@ -73,8 +75,10 @@ import {
 } from "@/components/ui/chart";
 import {
   getProfile,
-  updateProfile,
+  setGeneratedAvatar,
   checkDisplayNameAvailability,
+  updateProfile,
+  uploadAvatar,
 } from "@/services/profileService";
 import { getAuthToken } from "@/utils/auth";
 import { DateRange } from "react-day-picker";
@@ -163,6 +167,7 @@ interface FollowUser {
 }
 
 const Profile: React.FC = () => {
+  const { updateUserAvatar } = useUser();
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [editingField, setEditingField] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState("");
@@ -204,8 +209,9 @@ const Profile: React.FC = () => {
     from: undefined,
     to: undefined,
   });
-const inputRef = useRef<HTMLInputElement>(null);
-const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const avatarFileInputRef = useRef<HTMLInputElement>(null);
+  const [avatarUploading, setAvatarUploading] = useState(false);
 
   useEffect(() => {
     const fetchDashboard = async () => {
@@ -292,8 +298,7 @@ const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
         dashboard.profile.bio,
         dashboard.profile.twitter,
         dashboard.profile.instagram,
-        dashboard.profile.linkedin,
-        dashboard.profile.avatarUrl
+        dashboard.profile.linkedin
       );
       setSuccessMessage(
         `${field.charAt(0).toUpperCase() + field.slice(1)} updated successfully!`
@@ -322,16 +327,13 @@ const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
       return;
     }
     try {
-      setDashboard({ ...dashboard, profile: { ...dashboard.profile, avatarUrl } });
-      await updateProfile(
-        token,
-        dashboard.profile.displayName,
-        dashboard.profile.bio,
-        dashboard.profile.twitter,
-        dashboard.profile.instagram,
-        dashboard.profile.linkedin,
-        avatarUrl
-      );
+      // Optimistically update the local state
+      setDashboard({
+        ...dashboard,
+        profile: { ...dashboard.profile, avatarUrl },
+      });
+      await setGeneratedAvatar(token, avatarUrl);
+      updateUserAvatar(avatarUrl);
       setSuccessMessage("Avatar updated successfully!");
       setErrorMessage("");
     } catch {
@@ -340,6 +342,56 @@ const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
         ...dashboard,
         profile: { ...dashboard.profile, avatarUrl: dashboard.profile.avatarUrl },
       });
+    }
+  };
+
+  const handleAvatarUpload = async (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    if (!file || !dashboard?.profile) return;
+
+    const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
+    if (!allowedTypes.includes(file.type)) {
+      setErrorMessage("Please select a JPG, PNG, or WebP image.");
+      input.value = "";
+      return;
+    }
+    if (file.size <= 0 || file.size > 5 * 1024 * 1024) {
+      setErrorMessage("Avatar images must be 5MB or smaller.");
+      input.value = "";
+      return;
+    }
+
+    const token = getAuthToken();
+    if (!token) {
+      setErrorMessage("Authentication token is missing.");
+      input.value = "";
+      return;
+    }
+
+    setAvatarUploading(true);
+    setErrorMessage("");
+    try {
+      const result = await uploadAvatar(token, file);
+      setDashboard((current) =>
+        current
+          ? {
+              ...current,
+              profile: { ...current.profile, avatarUrl: result.avatarUrl },
+            }
+          : current
+      );
+      updateUserAvatar(result.avatarUrl);
+      setSuccessMessage("Avatar uploaded successfully!");
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Failed to upload avatar."
+      );
+    } finally {
+      setAvatarUploading(false);
+      input.value = "";
     }
   };
 
@@ -693,14 +745,45 @@ const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
         )}
         <div className="flex flex-col items-center mb-4">
           <div className="relative w-16 h-16 sm:w-20 sm:h-20 md:w-24 md:h-24 rounded-full overflow-hidden bg-muted flex-shrink-0 mb-2 border-2 border-primary shadow-md group">
-            <img src={profile.avatarUrl || defaultAvatar} alt="Avatar" className="object-cover w-full h-full" />
-            <button
-              onClick={() => setIsAvatarModalOpen(true)}
-              className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-              title="Edit Avatar"
-            >
-              <ImageIcon className="w-6 h-6 text-white" />
-            </button>
+            <img
+              src={profile.avatarUrl || DEFAULT_AVATAR_URL}
+              alt="Avatar"
+              onError={handleProfileAvatarLoadError}
+              className="object-cover w-full h-full"
+            />
+            {avatarUploading ? (
+              <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
+                <Loader2 className="w-6 h-6 text-white animate-spin" />
+              </div>
+            ) : (
+              <div className="absolute inset-0 bg-black/50 flex items-center justify-center gap-3 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 transition-opacity">
+                <button
+                  type="button"
+                  onClick={() => setIsAvatarModalOpen(true)}
+                  className="text-white hover:text-primary transition-colors"
+                  title="Create avatar"
+                  aria-label="Create avatar"
+                >
+                  <ImageIcon className="w-6 h-6" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => avatarFileInputRef.current?.click()}
+                  className="text-white hover:text-primary transition-colors"
+                  title="Upload profile picture"
+                  aria-label="Upload profile picture"
+                >
+                  <Upload className="w-6 h-6" />
+                </button>
+              </div>
+            )}
+            <input
+              ref={avatarFileInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              className="hidden"
+              onChange={handleAvatarUpload}
+            />
           </div>
           <AvatarModal
             isOpen={isAvatarModalOpen}

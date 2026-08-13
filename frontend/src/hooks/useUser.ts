@@ -1,4 +1,4 @@
-import { useEffect, useContext } from "react";
+import { useCallback, useEffect, useContext } from "react";
 import { useAtom } from "jotai";
 import { userAtom } from "../state/userAtom";
 import { AuthContext } from "../context/authContext";
@@ -101,9 +101,22 @@ export const useUser = () => {
     authContext?.loading,
   ]);
 
+  const updateUserAvatar = useCallback(
+    (avatarUrl: string) => {
+      setUser((currentUser) => {
+        if (!currentUser) return currentUser;
+        const updatedUser = { ...currentUser, avatarUrl };
+        localStorage.setItem(USER_CACHE_KEY, JSON.stringify(updatedUser));
+        return updatedUser;
+      });
+    },
+    [setUser]
+  );
+
   return {
     user,
     setUser,
+    updateUserAvatar,
     isLoading:
       authContext?.loading ||
       (!user && !!(authContext?.token || localStorage.getItem("token"))),
