@@ -2,5 +2,4 @@
 *.log
 *.env
 config.prod.yml
-backend/uploads/
 vite.config.ts.timestamp-*.mjs
