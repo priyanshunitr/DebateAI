@@ -73,7 +73,17 @@ gemini:
 
 ---
 
-### 4. Run the Backend Server
+### 4. (Optional) Custom Avatar Storage
+
+Custom profile picture uploads use presigned Amazon S3 URLs and a private S3
+bucket served through CloudFront. See [Avatar storage setup](docs/avatar-storage.md)
+for the required environment variables, IAM policy, bucket CORS, CloudFront
+OAC, and abandoned-upload lifecycle rule. The backend still runs when this is
+not configured, but custom image uploads remain disabled.
+
+---
+
+### 5. Run the Backend Server
 
 From the `backend` directory, start the server:
 

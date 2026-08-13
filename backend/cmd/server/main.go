@@ -1,11 +1,12 @@
 package main
 
 import (
+	"context"
 	"log"
-	"os"
 	"strconv"
 
 	"arguehub/config"
+	"arguehub/controllers"
 	"arguehub/db"
 	"arguehub/internal/debate"
 	"arguehub/middlewares"
@@ -34,8 +35,8 @@ func main() {
 	log.Println("Connected to MongoDB")
 
 	if err := db.EnsureIndexes(); err != nil {
-    log.Fatalf("Failed to ensure indexes: %v", err)
-    }
+		log.Fatalf("Failed to ensure indexes: %v", err)
+	}
 
 	if err := middlewares.InitCasbin("./config/config.prod.yml"); err != nil {
 		log.Fatalf("Failed to initialize Casbin: %v", err)
@@ -63,9 +64,24 @@ func main() {
 	utils.SeedDebateData()
 	utils.PopulateTestUsers()
 
-	os.MkdirAll("uploads", os.ModePerm)
+	var avatarStorage services.AvatarStorage
+	if cfg.S3.HasEndpointConfig() && !cfg.S3.IsConfigured() {
+		log.Fatal("Incomplete S3 avatar configuration: region, bucket, and publicBaseURL are all required")
+	}
+	if cfg.S3.IsConfigured() {
+		storage, err := services.NewS3AvatarStorage(context.Background(), cfg.S3)
+		if err != nil {
+			log.Fatalf("Failed to initialize S3 avatar storage: %v", err)
+		}
+		avatarStorage = storage
+		log.Println("S3 avatar storage initialized")
+	} else {
+		log.Println("S3 avatar storage is not configured; custom avatar uploads are disabled")
+	}
+	avatarController := controllers.NewAvatarController(avatarStorage)
 
-	router := setupRouter(cfg)
+	// Set up the Gin router and configure routes
+	router := setupRouter(cfg, avatarController)
 	port := strconv.Itoa(cfg.Server.Port)
 
 	if err := router.Run(":" + port); err != nil {
@@ -73,7 +89,7 @@ func main() {
 	}
 }
 
-func setupRouter(cfg *config.Config) *gin.Engine {
+func setupRouter(cfg *config.Config, avatarController *controllers.AvatarController) *gin.Engine {
 	router := gin.Default()
 
 	router.SetTrustedProxies([]string{"127.0.0.1", "localhost"})
@@ -105,7 +121,8 @@ func setupRouter(cfg *config.Config) *gin.Engine {
 	{
 		auth.GET("/user/fetchprofile", routes.GetProfileRouteHandler)
 		auth.PUT("/user/updateprofile", routes.UpdateProfileRouteHandler)
-        auth.GET("/user/check-displayname", routes.CheckDisplayNameRouteHandler)		
+		auth.GET("/user/check-displayname", routes.CheckDisplayNameRouteHandler)
+		routes.SetupAvatarRoutes(auth, avatarController)
 		auth.GET("/leaderboard", routes.GetLeaderboardRouteHandler)
 		auth.POST("/debate/result", routes.UpdateRatingAfterDebateRouteHandler)
 

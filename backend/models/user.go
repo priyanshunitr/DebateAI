@@ -17,6 +17,7 @@ type User struct {
 	Volatility        float64            `bson:"volatility" json:"volatility"`
 	LastRatingUpdate  time.Time          `bson:"lastRatingUpdate" json:"lastRatingUpdate"`
 	AvatarURL         string             `bson:"avatarUrl,omitempty" json:"avatarUrl,omitempty"`
+	AvatarKey         string             `bson:"avatarKey,omitempty" json:"-"`
 	Twitter           string             `bson:"twitter,omitempty" json:"twitter,omitempty"`
 	Instagram         string             `bson:"instagram,omitempty" json:"instagram,omitempty"`
 	LinkedIn          string             `bson:"linkedin,omitempty" json:"linkedin,omitempty"`
@@ -27,8 +28,9 @@ type User struct {
 	ResetPasswordCode string             `bson:"resetPasswordCode,omitempty"`
 	CreatedAt         time.Time          `bson:"createdAt"`
 	UpdatedAt         time.Time          `bson:"updatedAt"`
-	Score             int                `bson:"score" json:"score"`
-	Badges            []string           `bson:"badges,omitempty" json:"badges,omitempty"`
-	CurrentStreak     int                `bson:"currentStreak" json:"currentStreak"`
-	LastActivityDate  time.Time          `bson:"lastActivityDate,omitempty" json:"lastActivityDate,omitempty"`
+	// Gamification fields
+	Score            int       `bson:"score" json:"score"`                                           // Total gamification score
+	Badges           []string  `bson:"badges,omitempty" json:"badges,omitempty"`                     // List of badge names earned
+	CurrentStreak    int       `bson:"currentStreak" json:"currentStreak"`                           // Current daily streak
+	LastActivityDate time.Time `bson:"lastActivityDate,omitempty" json:"lastActivityDate,omitempty"` // Last activity date for streak calculation
 }

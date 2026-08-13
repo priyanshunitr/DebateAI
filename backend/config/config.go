@@ -3,9 +3,25 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
+
+type S3Config struct {
+	Region            string `yaml:"region"`
+	Bucket            string `yaml:"bucket"`
+	PublicBaseURL     string `yaml:"publicBaseURL"`
+	PresignTTLSeconds int    `yaml:"presignTTLSeconds"`
+}
+
+func (c S3Config) IsConfigured() bool {
+	return c.Region != "" && c.Bucket != "" && c.PublicBaseURL != ""
+}
+
+func (c S3Config) HasEndpointConfig() bool {
+	return c.Bucket != "" || c.PublicBaseURL != ""
+}
 
 type Config struct {
 	Server struct {
@@ -54,6 +70,8 @@ type Config struct {
 	GoogleOAuth struct {
 		ClientID string `yaml:"clientID"`
 	} `yaml:"googleOAuth"`
+
+	S3 S3Config `yaml:"s3"`
 }
 
 // LoadConfig reads the configuration file
@@ -85,6 +103,25 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if envGoogleClient := os.Getenv("GOOGLE_CLIENT_ID"); envGoogleClient != "" {
 		cfg.GoogleOAuth.ClientID = envGoogleClient
+	}
+	if envAWSRegion := os.Getenv("AWS_REGION"); envAWSRegion != "" {
+		cfg.S3.Region = envAWSRegion
+	}
+	if envS3Bucket := os.Getenv("AWS_S3_BUCKET"); envS3Bucket != "" {
+		cfg.S3.Bucket = envS3Bucket
+	}
+	if envS3PublicBaseURL := os.Getenv("AWS_S3_PUBLIC_BASE_URL"); envS3PublicBaseURL != "" {
+		cfg.S3.PublicBaseURL = envS3PublicBaseURL
+	}
+	if envPresignTTL := os.Getenv("AWS_S3_PRESIGN_TTL_SECONDS"); envPresignTTL != "" {
+		presignTTL, err := strconv.Atoi(envPresignTTL)
+		if err != nil || presignTTL <= 0 {
+			return nil, fmt.Errorf("AWS_S3_PRESIGN_TTL_SECONDS must be a positive integer")
+		}
+		cfg.S3.PresignTTLSeconds = presignTTL
+	}
+	if cfg.S3.PresignTTLSeconds == 0 {
+		cfg.S3.PresignTTLSeconds = 300
 	}
 	// Add other overrides as needed
 

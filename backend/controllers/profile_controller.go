@@ -45,11 +45,13 @@ func extractNameFromEmail(email string) string {
 func GetProfile(c *gin.Context) {
 	userIDParam := strings.TrimSpace(c.Query("userId"))
 
+	// Log detailed request information for debugging
 	log.Printf("GetProfile: Request URL = '%s'", c.Request.URL.String())
 	log.Printf("GetProfile: Raw Query = '%s'", c.Request.URL.RawQuery)
 	log.Printf("GetProfile: Query params map = %v", c.Request.URL.Query())
 	log.Printf("GetProfile: userId from c.Query() = '%s'", userIDParam)
 
+	// If c.Query() didn't work, try reading from URL.Query() directly
 	if userIDParam == "" {
 		values := c.Request.URL.Query()
 		if val, ok := values["userId"]; ok && len(val) > 0 && val[0] != "" {
@@ -58,6 +60,7 @@ func GetProfile(c *gin.Context) {
 		}
 	}
 
+	// If still empty, try parsing raw query string manually
 	if userIDParam == "" && c.Request.URL.RawQuery != "" {
 		rawQuery := c.Request.URL.RawQuery
 		parts := strings.Split(rawQuery, "&")
@@ -303,7 +306,6 @@ func UpdateProfile(ctx *gin.Context) {
 		Twitter     string `json:"twitter"`
 		Instagram   string `json:"instagram"`
 		LinkedIn    string `json:"linkedin"`
-		AvatarURL   string `json:"avatarUrl"`
 	}
 	if err := ctx.ShouldBindJSON(&updateData); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid body"})
@@ -330,7 +332,6 @@ func UpdateProfile(ctx *gin.Context) {
 		"twitter":     strings.TrimSpace(updateData.Twitter),
 		"instagram":   strings.TrimSpace(updateData.Instagram),
 		"linkedin":    strings.TrimSpace(updateData.LinkedIn),
-		"avatarUrl":   strings.TrimSpace(updateData.AvatarURL),
 		"updatedAt":   time.Now(),
 	}
 
