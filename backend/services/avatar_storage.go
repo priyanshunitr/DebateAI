@@ -45,8 +45,8 @@ type PresignedAvatarUpload struct {
 
 type AvatarStorage interface {
 	CreatePresignedUpload(ctx context.Context, userID, contentType string, fileSize int64) (*PresignedAvatarUpload, error)
-	ValidateUploadedObject(ctx context.Context, objectKey string) error
-	PromoteUploadedObject(ctx context.Context, objectKey string) (string, error)
+	ValidateUploadedObject(ctx context.Context, objectKey string) (string, error)
+	PromoteUploadedObject(ctx context.Context, objectKey, sourceETag string) (string, error)
 	DeleteObject(ctx context.Context, objectKey string) error
 	PublicURL(objectKey string) string
 	OwnsObject(userID, objectKey string) bool
@@ -60,20 +60,19 @@ type s3ObjectClient interface {
 }
 
 type S3AvatarStorage struct {
-	bucket        string
-	publicBaseURL string
-	presignTTL    time.Duration
-	client        s3ObjectClient
-	presigner     *s3.PresignClient
+	bucket     string
+	region     string
+	presignTTL time.Duration
+	client     s3ObjectClient
+	presigner  *s3.PresignClient
 }
 
 func NewS3AvatarStorage(ctx context.Context, cfg appconfig.S3Config) (*S3AvatarStorage, error) {
 	if !cfg.IsConfigured() {
-		return nil, fmt.Errorf("S3 avatar storage requires region, bucket, and publicBaseURL")
+		return nil, fmt.Errorf("S3 avatar storage requires region and bucket")
 	}
-	publicBaseURL, err := url.Parse(cfg.PublicBaseURL)
-	if err != nil || publicBaseURL.Scheme != "https" || publicBaseURL.Host == "" {
-		return nil, fmt.Errorf("S3 publicBaseURL must be a valid HTTPS URL")
+	if strings.Contains(cfg.Bucket, ".") {
+		return nil, fmt.Errorf("direct public S3 avatar bucket name must not contain dots")
 	}
 	if cfg.PresignTTLSeconds < 60 || cfg.PresignTTLSeconds > 900 {
 		return nil, fmt.Errorf("S3 presignTTLSeconds must be between 60 and 900")
@@ -86,11 +85,11 @@ func NewS3AvatarStorage(ctx context.Context, cfg appconfig.S3Config) (*S3AvatarS
 
 	client := s3.NewFromConfig(awsCfg)
 	return &S3AvatarStorage{
-		bucket:        cfg.Bucket,
-		publicBaseURL: strings.TrimRight(publicBaseURL.String(), "/"),
-		presignTTL:    time.Duration(cfg.PresignTTLSeconds) * time.Second,
-		client:        client,
-		presigner:     s3.NewPresignClient(client),
+		bucket:     cfg.Bucket,
+		region:     cfg.Region,
+		presignTTL: time.Duration(cfg.PresignTTLSeconds) * time.Second,
+		client:     client,
+		presigner:  s3.NewPresignClient(client),
 	}, nil
 }
 
@@ -136,53 +135,58 @@ func (s *S3AvatarStorage) CreatePresignedUpload(
 	}, nil
 }
 
-func (s *S3AvatarStorage) ValidateUploadedObject(ctx context.Context, objectKey string) error {
+func (s *S3AvatarStorage) ValidateUploadedObject(ctx context.Context, objectKey string) (string, error) {
 	head, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(objectKey),
 	})
 	if err != nil {
-		return fmt.Errorf("inspect uploaded avatar: %w", err)
+		return "", fmt.Errorf("inspect uploaded avatar: %w", err)
 	}
 	if head.ContentLength == nil || *head.ContentLength <= 0 || *head.ContentLength > MaxAvatarSize {
-		return fmt.Errorf("uploaded avatar has an invalid size")
+		return "", fmt.Errorf("uploaded avatar has an invalid size")
+	}
+	if aws.ToString(head.ETag) == "" {
+		return "", fmt.Errorf("uploaded avatar has no entity tag")
 	}
 
 	declaredType := normalizeContentType(aws.ToString(head.ContentType))
 	expectedExtension, ok := avatarExtensions[declaredType]
 	if !ok || !strings.EqualFold(path.Ext(objectKey), expectedExtension) {
-		return fmt.Errorf("uploaded avatar has an invalid content type")
+		return "", fmt.Errorf("uploaded avatar has an invalid content type")
 	}
 
 	object, err := s.client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(objectKey),
-		Range:  aws.String("bytes=0-511"),
+		Bucket:  aws.String(s.bucket),
+		IfMatch: head.ETag,
+		Key:     aws.String(objectKey),
+		Range:   aws.String("bytes=0-511"),
 	})
 	if err != nil {
-		return fmt.Errorf("read uploaded avatar signature: %w", err)
+		return "", fmt.Errorf("read uploaded avatar signature: %w", err)
 	}
 	defer object.Body.Close()
 
 	signature, err := io.ReadAll(io.LimitReader(object.Body, 512))
 	if err != nil {
-		return fmt.Errorf("read uploaded avatar signature: %w", err)
+		return "", fmt.Errorf("read uploaded avatar signature: %w", err)
 	}
 	if len(signature) == 0 || normalizeContentType(http.DetectContentType(signature)) != declaredType {
-		return fmt.Errorf("uploaded file content does not match its image type")
+		return "", fmt.Errorf("uploaded file content does not match its image type")
 	}
 
-	return nil
+	return aws.ToString(head.ETag), nil
 }
 
-func (s *S3AvatarStorage) PromoteUploadedObject(ctx context.Context, uploadKey string) (string, error) {
+func (s *S3AvatarStorage) PromoteUploadedObject(ctx context.Context, uploadKey, sourceETag string) (string, error) {
 	avatarKey := strings.Replace(uploadKey, avatarUploadPrefix+"/", avatarObjectPrefix+"/", 1)
 	_, err := s.client.CopyObject(ctx, &s3.CopyObjectInput{
-		Bucket:           aws.String(s.bucket),
-		CopySource:       aws.String(url.PathEscape(s.bucket + "/" + uploadKey)),
-		Key:              aws.String(avatarKey),
-		Tagging:          aws.String("upload-state=confirmed"),
-		TaggingDirective: s3types.TaggingDirectiveReplace,
+		Bucket:            aws.String(s.bucket),
+		CopySource:        aws.String(url.PathEscape(s.bucket + "/" + uploadKey)),
+		CopySourceIfMatch: aws.String(sourceETag),
+		Key:               aws.String(avatarKey),
+		Tagging:           aws.String("upload-state=confirmed"),
+		TaggingDirective:  s3types.TaggingDirectiveReplace,
 	})
 	if err != nil {
 		return "", fmt.Errorf("promote avatar object: %w", err)
@@ -214,7 +218,12 @@ func (s *S3AvatarStorage) PublicURL(objectKey string) string {
 	for index, segment := range segments {
 		segments[index] = url.PathEscape(segment)
 	}
-	return s.publicBaseURL + "/" + strings.Join(segments, "/")
+	return fmt.Sprintf(
+		"https://%s.s3.%s.amazonaws.com/%s",
+		s.bucket,
+		s.region,
+		strings.Join(segments, "/"),
+	)
 }
 
 func (s *S3AvatarStorage) OwnsObject(userID, objectKey string) bool {

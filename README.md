@@ -75,11 +75,11 @@ gemini:
 
 ### 4. (Optional) Custom Avatar Storage
 
-Custom profile picture uploads use presigned Amazon S3 URLs and a private S3
-bucket served through CloudFront. See [Avatar storage setup](docs/avatar-storage.md)
-for the required environment variables, IAM policy, bucket CORS, CloudFront
-OAC, and abandoned-upload lifecycle rule. The backend still runs when this is
-not configured, but custom image uploads remain disabled.
+Custom profile picture uploads use presigned Amazon S3 URLs and permanent public
+links from a dedicated S3 bucket. See [Avatar storage setup](docs/avatar-storage.md)
+for the bucket policy, CORS, IAM permissions, configuration, and cleanup rule.
+The backend still runs when S3 is not configured, but custom uploads remain
+disabled.
 
 ---
 

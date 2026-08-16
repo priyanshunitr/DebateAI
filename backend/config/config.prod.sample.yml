@@ -44,8 +44,7 @@ googleOAuth:
 
 s3:
   region: "" # Example: ap-south-1
-  bucket: "" # Private avatar bucket name
-  publicBaseURL: "" # Example: https://avatars.example.com (CloudFront)
+  bucket: "" # Public avatar bucket name; use a bucket name without dots
   presignTTLSeconds: 300
   # AWS credentials are intentionally not stored here. The AWS SDK uses its
   # default credential chain (environment variables, local profile, or IAM role).

@@ -11,16 +11,15 @@ import (
 type S3Config struct {
 	Region            string `yaml:"region"`
 	Bucket            string `yaml:"bucket"`
-	PublicBaseURL     string `yaml:"publicBaseURL"`
 	PresignTTLSeconds int    `yaml:"presignTTLSeconds"`
 }
 
 func (c S3Config) IsConfigured() bool {
-	return c.Region != "" && c.Bucket != "" && c.PublicBaseURL != ""
+	return c.Region != "" && c.Bucket != ""
 }
 
 func (c S3Config) HasEndpointConfig() bool {
-	return c.Bucket != "" || c.PublicBaseURL != ""
+	return c.Bucket != ""
 }
 
 type Config struct {
@@ -109,9 +108,6 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if envS3Bucket := os.Getenv("AWS_S3_BUCKET"); envS3Bucket != "" {
 		cfg.S3.Bucket = envS3Bucket
-	}
-	if envS3PublicBaseURL := os.Getenv("AWS_S3_PUBLIC_BASE_URL"); envS3PublicBaseURL != "" {
-		cfg.S3.PublicBaseURL = envS3PublicBaseURL
 	}
 	if envPresignTTL := os.Getenv("AWS_S3_PRESIGN_TTL_SECONDS"); envPresignTTL != "" {
 		presignTTL, err := strconv.Atoi(envPresignTTL)

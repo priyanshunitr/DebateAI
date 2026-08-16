@@ -1,7 +1,9 @@
 package services
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,9 @@ import (
 type recordingS3Client struct {
 	copyInput   *s3.CopyObjectInput
 	deleteInput *s3.DeleteObjectInput
+	getInput    *s3.GetObjectInput
+	headOutput  *s3.HeadObjectOutput
+	objectBody  []byte
 }
 
 func (client *recordingS3Client) HeadObject(
@@ -21,15 +26,19 @@ func (client *recordingS3Client) HeadObject(
 	*s3.HeadObjectInput,
 	...func(*s3.Options),
 ) (*s3.HeadObjectOutput, error) {
-	panic("unexpected HeadObject call")
+	if client.headOutput == nil {
+		panic("unexpected HeadObject call")
+	}
+	return client.headOutput, nil
 }
 
 func (client *recordingS3Client) GetObject(
-	context.Context,
-	*s3.GetObjectInput,
-	...func(*s3.Options),
+	_ context.Context,
+	input *s3.GetObjectInput,
+	_ ...func(*s3.Options),
 ) (*s3.GetObjectOutput, error) {
-	panic("unexpected GetObject call")
+	client.getInput = input
+	return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewReader(client.objectBody))}, nil
 }
 
 func (client *recordingS3Client) CopyObject(
@@ -81,8 +90,8 @@ func TestOwnsObject(t *testing.T) {
 }
 
 func TestPublicURL(t *testing.T) {
-	storage := &S3AvatarStorage{publicBaseURL: "https://cdn.example.com"}
-	if got := storage.PublicURL("avatars/user id/photo.png"); got != "https://cdn.example.com/avatars/user%20id/photo.png" {
+	storage := &S3AvatarStorage{bucket: "avatar-bucket", region: "ap-south-1"}
+	if got := storage.PublicURL("avatars/user id/photo.png"); got != "https://avatar-bucket.s3.ap-south-1.amazonaws.com/avatars/user%20id/photo.png" {
 		t.Fatalf("PublicURL() = %q", got)
 	}
 }
@@ -93,11 +102,11 @@ func TestCreatePresignedUpload(t *testing.T) {
 		Credentials: credentials.NewStaticCredentialsProvider("test-key", "test-secret", ""),
 	})
 	storage := &S3AvatarStorage{
-		bucket:        "avatar-bucket",
-		publicBaseURL: "https://avatars.example.com",
-		presignTTL:    fiveMinutes,
-		client:        client,
-		presigner:     s3.NewPresignClient(client),
+		bucket:     "avatar-bucket",
+		region:     "ap-south-1",
+		presignTTL: fiveMinutes,
+		client:     client,
+		presigner:  s3.NewPresignClient(client),
 	}
 
 	upload, err := storage.CreatePresignedUpload(context.Background(), "user123", "image/png", 1024)
@@ -117,12 +126,35 @@ func TestCreatePresignedUpload(t *testing.T) {
 	}
 }
 
+func TestValidateUploadedObjectBindsReadToETag(t *testing.T) {
+	client := &recordingS3Client{
+		headOutput: &s3.HeadObjectOutput{
+			ContentLength: aws.Int64(8),
+			ContentType:   aws.String("image/png"),
+			ETag:          aws.String(`"validated-etag"`),
+		},
+		objectBody: []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'},
+	}
+	storage := &S3AvatarStorage{bucket: "avatar-bucket", client: client}
+
+	etag, err := storage.ValidateUploadedObject(context.Background(), "avatar-uploads/user123/photo.png")
+	if err != nil {
+		t.Fatalf("ValidateUploadedObject() error = %v", err)
+	}
+	if etag != `"validated-etag"` {
+		t.Fatalf("ValidateUploadedObject() ETag = %q", etag)
+	}
+	if client.getInput == nil || aws.ToString(client.getInput.IfMatch) != etag {
+		t.Fatalf("GetObject was not bound to validated ETag: %#v", client.getInput)
+	}
+}
+
 func TestPromoteUploadedObject(t *testing.T) {
 	client := &recordingS3Client{}
 	storage := &S3AvatarStorage{bucket: "avatar-bucket", client: client}
 	uploadKey := "avatar-uploads/user123/photo.png"
 
-	avatarKey, err := storage.PromoteUploadedObject(context.Background(), uploadKey)
+	avatarKey, err := storage.PromoteUploadedObject(context.Background(), uploadKey, `"source-etag"`)
 	if err != nil {
 		t.Fatalf("PromoteUploadedObject() error = %v", err)
 	}
@@ -134,6 +166,9 @@ func TestPromoteUploadedObject(t *testing.T) {
 	}
 	if aws.ToString(client.copyInput.CopySource) != "avatar-bucket%2Favatar-uploads%2Fuser123%2Fphoto.png" {
 		t.Fatalf("unexpected copy source: %q", aws.ToString(client.copyInput.CopySource))
+	}
+	if aws.ToString(client.copyInput.CopySourceIfMatch) != `"source-etag"` {
+		t.Fatalf("unexpected copy source ETag: %q", aws.ToString(client.copyInput.CopySourceIfMatch))
 	}
 	if aws.ToString(client.copyInput.Tagging) != "upload-state=confirmed" {
 		t.Fatalf("unexpected copy tagging: %q", aws.ToString(client.copyInput.Tagging))

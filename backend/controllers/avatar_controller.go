@@ -94,12 +94,13 @@ func (controller *AvatarController) ConfirmUpload(ctx *gin.Context) {
 	operationCtx, cancel := context.WithTimeout(ctx.Request.Context(), 15*time.Second)
 	defer cancel()
 
-	if err := controller.storage.ValidateUploadedObject(operationCtx, request.ObjectKey); err != nil {
+	sourceETag, err := controller.storage.ValidateUploadedObject(operationCtx, request.ObjectKey)
+	if err != nil {
 		controller.deleteObject(request.ObjectKey, "rejected")
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Uploaded file is not a valid avatar"})
 		return
 	}
-	avatarKey, err := controller.storage.PromoteUploadedObject(operationCtx, request.ObjectKey)
+	avatarKey, err := controller.storage.PromoteUploadedObject(operationCtx, request.ObjectKey, sourceETag)
 	if err != nil {
 		controller.deleteObject(request.ObjectKey, "unconfirmed")
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to confirm avatar upload"})

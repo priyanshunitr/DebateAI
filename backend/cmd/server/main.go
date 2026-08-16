@@ -66,7 +66,7 @@ func main() {
 
 	var avatarStorage services.AvatarStorage
 	if cfg.S3.HasEndpointConfig() && !cfg.S3.IsConfigured() {
-		log.Fatal("Incomplete S3 avatar configuration: region, bucket, and publicBaseURL are all required")
+		log.Fatal("Incomplete S3 avatar configuration: region and bucket are required")
 	}
 	if cfg.S3.IsConfigured() {
 		storage, err := services.NewS3AvatarStorage(context.Background(), cfg.S3)
