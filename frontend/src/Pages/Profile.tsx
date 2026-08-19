@@ -210,6 +210,7 @@ const Profile: React.FC = () => {
     to: undefined,
   });
   const inputRef = useRef<HTMLInputElement>(null);
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const avatarFileInputRef = useRef<HTMLInputElement>(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
 
