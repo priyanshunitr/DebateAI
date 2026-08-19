@@ -745,12 +745,12 @@ const Profile: React.FC = () => {
           </div>
         )}
         <div className="flex flex-col items-center mb-4">
-          <div className="relative w-16 h-16 sm:w-20 sm:h-20 md:w-24 md:h-24 rounded-full overflow-hidden bg-muted flex-shrink-0 mb-2 border-2 border-primary shadow-md group">
+          <div className="relative aspect-square w-16 sm:w-20 md:w-24 rounded-full overflow-hidden bg-muted flex-shrink-0 mb-2 border-2 border-primary shadow-md group">
             <img
               src={profile.avatarUrl || DEFAULT_AVATAR_URL}
               alt="Avatar"
               onError={handleProfileAvatarLoadError}
-              className="object-cover w-full h-full"
+              className="block h-full w-full object-cover object-center"
             />
             {avatarUploading ? (
               <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
