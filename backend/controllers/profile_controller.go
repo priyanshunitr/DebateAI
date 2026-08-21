@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"net/http"
 	"net/url"
@@ -45,18 +44,11 @@ func extractNameFromEmail(email string) string {
 func GetProfile(c *gin.Context) {
 	userIDParam := strings.TrimSpace(c.Query("userId"))
 
-	// Log detailed request information for debugging
-	log.Printf("GetProfile: Request URL = '%s'", c.Request.URL.String())
-	log.Printf("GetProfile: Raw Query = '%s'", c.Request.URL.RawQuery)
-	log.Printf("GetProfile: Query params map = %v", c.Request.URL.Query())
-	log.Printf("GetProfile: userId from c.Query() = '%s'", userIDParam)
-
 	// If c.Query() didn't work, try reading from URL.Query() directly
 	if userIDParam == "" {
 		values := c.Request.URL.Query()
 		if val, ok := values["userId"]; ok && len(val) > 0 && val[0] != "" {
 			userIDParam = strings.TrimSpace(val[0])
-			log.Printf("GetProfile: Got userId from URL.Query(): '%s'", userIDParam)
 		}
 	}
 
@@ -70,20 +62,14 @@ func GetProfile(c *gin.Context) {
 				if decoded, err := url.QueryUnescape(userIDParam); err == nil {
 					userIDParam = strings.TrimSpace(decoded)
 				}
-				log.Printf("GetProfile: Extracted userId from raw query: '%s'", userIDParam)
 				break
 			}
 		}
 	}
 
-	log.Printf("GetProfile: Final userId param = '%s'", userIDParam)
-
 	if userIDParam != "" && userIDParam != "undefined" && userIDParam != "null" {
-		log.Printf("GetProfile: Processing userId query param: '%s'", userIDParam)
-
 		userID, err := primitive.ObjectIDFromHex(userIDParam)
 		if err != nil {
-			log.Printf("GetProfile: Invalid ObjectID format: '%s', error: %v", userIDParam, err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID format", "provided": userIDParam})
 			return
 		}
@@ -94,12 +80,9 @@ func GetProfile(c *gin.Context) {
 		var user models.User
 		err = db.MongoDatabase.Collection("users").FindOne(dbCtx, bson.M{"_id": userID}).Decode(&user)
 		if err != nil {
-			log.Printf("GetProfile: User not found in DB for ID: '%s', error: %v", userIDParam, err)
 			c.JSON(http.StatusNotFound, gin.H{"error": "User not found", "userId": userIDParam})
 			return
 		}
-
-		log.Printf("GetProfile: Found user - ID: %s, Email: %s, DisplayName: %s", user.ID.Hex(), user.Email, user.DisplayName)
 
 		displayName := user.DisplayName
 		if displayName == "" {
@@ -126,8 +109,6 @@ func GetProfile(c *gin.Context) {
 		})
 		return
 	}
-
-	log.Printf("GetProfile: No userId query param provided, falling back to authenticated user")
 
 	email := c.GetString("email")
 	if email == "" {

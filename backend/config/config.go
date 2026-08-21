@@ -19,7 +19,7 @@ func (c S3Config) IsConfigured() bool {
 }
 
 func (c S3Config) HasEndpointConfig() bool {
-	return c.Bucket != ""
+	return c.Region != "" || c.Bucket != ""
 }
 
 type Config struct {
