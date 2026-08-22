@@ -185,6 +185,43 @@ type JudgmentData = {
   };
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const isScoreEntry = (
+  value: unknown
+): value is { score: number; reason: string } =>
+  isRecord(value) &&
+  typeof value.score === "number" &&
+  Number.isFinite(value.score) &&
+  typeof value.reason === "string";
+
+const hasUserAndBotScores = (value: unknown): boolean =>
+  isRecord(value) && isScoreEntry(value.user) && isScoreEntry(value.bot);
+
+const isJudgmentData = (value: unknown): value is JudgmentData => {
+  if (!isRecord(value)) return false;
+
+  const { verdict, total } = value;
+
+  return (
+    hasUserAndBotScores(value.opening_statement) &&
+    hasUserAndBotScores(value.cross_examination) &&
+    hasUserAndBotScores(value.answers) &&
+    hasUserAndBotScores(value.closing) &&
+    isRecord(total) &&
+    typeof total.user === "number" &&
+    Number.isFinite(total.user) &&
+    typeof total.bot === "number" &&
+    Number.isFinite(total.bot) &&
+    isRecord(verdict) &&
+    typeof verdict.winner === "string" &&
+    typeof verdict.reason === "string" &&
+    typeof verdict.congratulations === "string" &&
+    typeof verdict.opponent_analysis === "string"
+  );
+};
+
 const phaseSequences = [
   ["For", "Against"],
   ["For", "Against", "Against", "For"],
@@ -587,7 +624,7 @@ const DebateRoom: React.FC = () => {
       const jsonString = extractJSON(result);
       console.log("Extracted JSON string:", jsonString);
       
-      let judgment: JudgmentData;
+      let judgment: unknown;
       try {
         judgment = JSON.parse(jsonString);
       } catch (parseError) {
@@ -605,6 +642,10 @@ const DebateRoom: React.FC = () => {
         }
       }
       
+      if (!isJudgmentData(judgment)) {
+        throw new Error("The judge returned incomplete result data");
+      }
+
       console.log("Parsed judgment:", judgment);
       setJudgmentData(judgment);
       setPopup({ show: false, message: "" });
