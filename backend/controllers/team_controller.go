@@ -597,6 +597,10 @@ func DeleteTeam(c *gin.Context) {
 		return
 	}
 
+	// The matchmaking pool is stored separately in memory, so deleting the
+	// MongoDB document does not remove its queued matchmaking entry.
+	services.RemoveFromMatchmaking(objectID)
+
 	c.JSON(http.StatusOK, gin.H{"message": "Team deleted successfully"})
 }
 
