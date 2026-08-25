@@ -140,6 +140,26 @@ const BASE_URL =
   (import.meta.env.VITE_BASE_URL as string | undefined)?.replace(/\/$/, "") ??
   window.location.origin;
 
+const WEBRTC_ICE_SERVERS: RTCIceServer[] = [
+  { urls: "stun:stun.l.google.com:19302" },
+];
+
+const turnUrl = import.meta.env.VITE_WEBRTC_TURN_URL as string | undefined;
+const turnUsername = import.meta.env.VITE_WEBRTC_TURN_USERNAME as
+  | string
+  | undefined;
+const turnCredential = import.meta.env.VITE_WEBRTC_TURN_CREDENTIAL as
+  | string
+  | undefined;
+
+if (turnUrl && turnUsername && turnCredential) {
+  WEBRTC_ICE_SERVERS.push({
+    urls: turnUrl,
+    username: turnUsername,
+    credential: turnCredential,
+  });
+}
+
 // Function to extract JSON from response
 const extractJSON = (response: string): string => {
   const fenceRegex = /```(?:json)?\s*([\s\S]*?)\s*```/;
@@ -201,6 +221,10 @@ const TeamDebateRoom: React.FC = () => {
   const localVideoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
   const remoteVideoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
+  const reconnectTimeoutsRef = useRef<
+    Map<string, ReturnType<typeof setTimeout>>
+  >(new Map());
+  const reconnectPeerRef = useRef<(remoteUserId: string) => void>(() => {});
   const debateStartedRef = useRef<boolean>(false); // Track if debate has started to prevent popup reopening
   const currentUserIdRef = useRef<string | null>(null);
   const myTeamIdRef = useRef<string | null>(null);
@@ -373,6 +397,12 @@ const TeamDebateRoom: React.FC = () => {
 
   const closePeerConnection = useCallback(
     (remoteUserId: string) => {
+      const reconnectTimeout = reconnectTimeoutsRef.current.get(remoteUserId);
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+        reconnectTimeoutsRef.current.delete(remoteUserId);
+      }
+
       const pc = pcRefs.current.get(remoteUserId);
       if (pc) {
         try {
@@ -410,9 +440,7 @@ const TeamDebateRoom: React.FC = () => {
         return undefined;
       }
 
-      const pc = new RTCPeerConnection({
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-      });
+      const pc = new RTCPeerConnection({ iceServers: WEBRTC_ICE_SERVERS });
 
       pcRefs.current.set(remoteUserId, pc);
 
@@ -445,8 +473,36 @@ const TeamDebateRoom: React.FC = () => {
 
       pc.oniceconnectionstatechange = () => {
         const state = pc.iceConnectionState;
-        if (state === "failed" || state === "disconnected" || state === "closed") {
-          closePeerConnection(remoteUserId);
+        const reconnectTimeout = reconnectTimeoutsRef.current.get(remoteUserId);
+
+        if (state === "connected" || state === "completed") {
+          if (reconnectTimeout) {
+            clearTimeout(reconnectTimeout);
+            reconnectTimeoutsRef.current.delete(remoteUserId);
+          }
+          return;
+        }
+
+        if (
+          (state === "failed" || state === "disconnected") &&
+          !reconnectTimeout
+        ) {
+          const delay = state === "failed" ? 0 : 5000;
+          const timeout = setTimeout(() => {
+            reconnectTimeoutsRef.current.delete(remoteUserId);
+
+            if (pcRefs.current.get(remoteUserId) !== pc) return;
+            if (
+              pc.iceConnectionState !== "failed" &&
+              pc.iceConnectionState !== "disconnected"
+            ) {
+              return;
+            }
+
+            closePeerConnection(remoteUserId);
+            reconnectPeerRef.current(remoteUserId);
+          }, delay);
+          reconnectTimeoutsRef.current.set(remoteUserId, timeout);
         }
       };
 
@@ -521,6 +577,13 @@ const TeamDebateRoom: React.FC = () => {
     },
     [createPeerConnection, initiateOffer]
   );
+
+  useEffect(() => {
+    reconnectPeerRef.current = ensurePeerConnection;
+    return () => {
+      reconnectPeerRef.current = () => {};
+    };
+  }, [ensurePeerConnection]);
 
   useEffect(() => {
     remoteStreams.forEach((stream, userId) => {
@@ -777,15 +840,19 @@ const TeamDebateRoom: React.FC = () => {
     const ws = new WebSocket(wsUrl.toString());
     wsRef.current = ws;
 
-    ws.onopen = () => {
+    ws.onopen = async () => {
       if (cancelled) {
         ws.close();
         return;
       }
 
       console.log("Team debate WebSocket connected");
+      await ensureMediaStream();
+
+      if (cancelled || ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
       ws.send(JSON.stringify({ type: "join" }));
-      ensureMediaStream();
     };
 
     ws.onmessage = async (event) => {
@@ -1155,6 +1222,18 @@ const TeamDebateRoom: React.FC = () => {
           }
           break;
         }
+        case "participantJoined": {
+          if (!data.userId || data.userId === currentUserId) {
+            break;
+          }
+
+          // A previous offer may have been attempted while this participant
+          // was offline. Reset that stale attempt and negotiate again now that
+          // the backend has confirmed the target is ready for WebRTC offers.
+          closePeerConnection(data.userId);
+          ensurePeerConnection(data.userId);
+          break;
+        }
         case "offer":
           if (
             data.targetUserId !== currentUserId ||
@@ -1265,12 +1344,18 @@ const TeamDebateRoom: React.FC = () => {
         wsRef.current.close();
         wsRef.current = null;
       }
+      reconnectTimeoutsRef.current.forEach((timeout) => clearTimeout(timeout));
+      reconnectTimeoutsRef.current.clear();
       pcRefs.current.forEach((pc) => pc.close());
+      pcRefs.current.clear();
+      pendingCandidatesRef.current.clear();
+      initiatedOffersRef.current.clear();
     };
   }, [
     debateId,
     hasDeterminedTeam,
     createPeerConnection,
+    ensurePeerConnection,
     flushPendingCandidates,
     sendSignalMessage,
     closePeerConnection,
