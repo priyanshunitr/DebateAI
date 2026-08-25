@@ -3,7 +3,10 @@ import { useParams } from "react-router-dom";
 import { useAtom } from "jotai";
 import { userAtom } from "@/state/userAtom";
 import { useUser } from "@/hooks/useUser";
-import { getTeamDebate } from "@/services/teamDebateService";
+import {
+  getTeamDebate,
+  type TeamDebate,
+} from "@/services/teamDebateService";
 import { Button } from "@/components/ui/button";
 import JudgmentPopup from "@/components/JudgementPopup";
 import SpeechTranscripts from "@/components/SpeechTranscripts";
@@ -106,6 +109,12 @@ interface WSMessage {
   team2Ready?: number;
   team1MembersCount?: number;
   team2MembersCount?: number;
+  team1Name?: string;
+  team2Name?: string;
+  team1ReadyStatus?: Record<string, boolean>;
+  team2ReadyStatus?: Record<string, boolean>;
+  countdown?: number;
+  assignedToTeam?: "Team1" | "Team2";
   spectatorCount?: number;
   spectator?: {
     connectionId: string;
@@ -159,7 +168,7 @@ const TeamDebateRoom: React.FC = () => {
   }, [user?.id, userFromHook?.id, currentUser?.id, isUserLoading, isAuthenticated]);
 
   // Debate state
-  const [debate, setDebate] = useState<any>(null);
+  const [debate, setDebate] = useState<TeamDebate | null>(null);
   const [topic, setTopic] = useState("");
   const [localRole, setLocalRole] = useState<DebateRole | null>(null);
   const [peerRole, setPeerRole] = useState<DebateRole | null>(null);
@@ -210,12 +219,17 @@ const TeamDebateRoom: React.FC = () => {
 
   // Timer state
   const [timer, setTimer] = useState<number>(0);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Speech recognition state
   const [isListening, setIsListening] = useState(false);
   const [currentTranscript, setCurrentTranscript] = useState("");
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const isListeningRef = useRef(false);
+  const shouldListenRef = useRef(false);
+  const recognitionRestartTimeoutRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
   const [speechError, setSpeechError] = useState<string | null>(null);
   const [speechTranscripts, setSpeechTranscripts] = useState<{
     [key: string]: string;
@@ -653,16 +667,15 @@ const TeamDebateRoom: React.FC = () => {
   }, [timer, debatePhase, isMyTurn, speechTranscripts, localRole, debateId]);
 
   useEffect(() => {
-  currentUserIdRef.current = currentUser?.id;
-  myTeamIdRef.current = myTeamId;
-  isTeam1Ref.current = isTeam1;
-  debatePhaseRef.current = debatePhase;
-}, [currentUser?.id, myTeamId, isTeam1, debatePhase]);
-
+    currentUserIdRef.current = currentUser?.id ?? null;
+    myTeamIdRef.current = myTeamId;
+    isTeam1Ref.current = isTeam1;
+    debatePhaseRef.current = debatePhase;
+  }, [currentUser?.id, myTeamId, isTeam1, debatePhase]);
 
   // Initialize WebSocket connection - only need token and debateId
   // User ID will be extracted from token on backend
- 
+
   useEffect(() => {
     const token = getAuthToken();
     if (!token || !debateId || !hasDeterminedTeam) {
@@ -738,7 +751,6 @@ const TeamDebateRoom: React.FC = () => {
       const amTeam1 = isTeam1Ref.current;
       const currentMyTeamId = myTeamIdRef.current;
       const currentUserId = currentUserIdRef.current;
-      const currentPhase = debatePhaseRef.current;
 
       switch (data.type) {
         case "stateSync": {
@@ -785,24 +797,24 @@ const TeamDebateRoom: React.FC = () => {
           if (data.team2MembersCount !== undefined) setTeam2MembersCount(data.team2MembersCount);
           
           // Update team names if provided (for late joiners)
-          if ((data as any).team1Name) {
+          if (data.team1Name) {
             if (amTeam1) {
-              setMyTeamName((data as any).team1Name);
+              setMyTeamName(data.team1Name);
             } else {
-              setOpponentTeamName((data as any).team1Name);
+              setOpponentTeamName(data.team1Name);
             }
           }
-          if ((data as any).team2Name) {
+          if (data.team2Name) {
             if (amTeam1) {
-              setOpponentTeamName((data as any).team2Name);
+              setOpponentTeamName(data.team2Name);
             } else {
-              setMyTeamName((data as any).team2Name);
+              setMyTeamName(data.team2Name);
             }
           }
           
           // Update individual player ready status (for late joiners)
-          if ((data as any).team1ReadyStatus) {
-            const team1Status = (data as any).team1ReadyStatus as Record<string, boolean>;
+          if (data.team1ReadyStatus) {
+            const team1Status = data.team1ReadyStatus;
             setPlayerReadyStatus(prev => {
               const updated = new Map(prev);
               Object.entries(team1Status).forEach(([userId, ready]) => {
@@ -811,8 +823,8 @@ const TeamDebateRoom: React.FC = () => {
               return updated;
             });
           }
-          if ((data as any).team2ReadyStatus) {
-            const team2Status = (data as any).team2ReadyStatus as Record<string, boolean>;
+          if (data.team2ReadyStatus) {
+            const team2Status = data.team2ReadyStatus;
             setPlayerReadyStatus(prev => {
               const updated = new Map(prev);
               Object.entries(team2Status).forEach(([userId, ready]) => {
@@ -835,8 +847,8 @@ const TeamDebateRoom: React.FC = () => {
           
           // Update localReady if we have the user's ready status in stateSync
           if (currentUserId) {
-            const team1Status = (data as any).team1ReadyStatus as Record<string, boolean> | undefined;
-            const team2Status = (data as any).team2ReadyStatus as Record<string, boolean> | undefined;
+            const team1Status = data.team1ReadyStatus;
+            const team2Status = data.team2ReadyStatus;
             if (amTeam1 && team1Status && team1Status[currentUserId] !== undefined) {
               setLocalReady(team1Status[currentUserId]);
             } else if (!amTeam1 && team2Status && team2Status[currentUserId] !== undefined) {
@@ -914,7 +926,7 @@ const TeamDebateRoom: React.FC = () => {
         }
         case "countdownStart": {
           // Backend is starting countdown - show it to all users
-          const countdownValue = (data as any).countdown || 3;
+          const countdownValue = data.countdown || 3;
           console.log('✓✓✓ COUNTDOWN STARTED FROM BACKEND:', countdownValue);
           setCountdown(countdownValue);
           // Hide setup popup when countdown starts
@@ -929,12 +941,12 @@ const TeamDebateRoom: React.FC = () => {
         case "ready": {
           console.log("=== READY MESSAGE RECEIVED ===");
           console.log("Received ready message:", data);
-          console.log("Current user:", currentUser?.id);
+          console.log("Current user:", currentUserId);
           console.log("Message userId:", data.userId);
           console.log("Message teamId:", data.teamId);
-          console.log("Message assignedToTeam:", (data as any).assignedToTeam);
-          console.log("isTeam1:", isTeam1);
-          console.log("myTeamId:", myTeamId);
+          console.log("Message assignedToTeam:", data.assignedToTeam);
+          console.log("isTeam1:", amTeam1);
+          console.log("myTeamId:", currentMyTeamId);
           console.log(
             "Team1Ready:",
             data.team1Ready,
@@ -951,7 +963,7 @@ const TeamDebateRoom: React.FC = () => {
           // CRITICAL: Verify the ready status is assigned to the correct team
           const messageTeamId = data.teamId;
           const expectedTeamId = currentMyTeamId; // Should be the same regardless of isTeam1
-          const assignedTeam = (data as any).assignedToTeam;
+          const assignedTeam = data.assignedToTeam;
           
           // Update the ready status for the specific user who clicked
           if (data.userId === currentUserId && data.ready !== undefined) {
@@ -981,9 +993,8 @@ const TeamDebateRoom: React.FC = () => {
             setTeam2ReadyCount(data.team2Ready);
           }
           // CRITICAL: Update member counts from ready message
-          // Check both direct access and through (data as any) to handle type issues
-          const team1Count = data.team1MembersCount ?? (data as any).team1MembersCount;
-          const team2Count = data.team2MembersCount ?? (data as any).team2MembersCount;
+          const team1Count = data.team1MembersCount;
+          const team2Count = data.team2MembersCount;
           
           if (team1Count !== undefined && team1Count !== null) {
             console.log(`✓ Updating team1MembersCount to ${team1Count}`);
@@ -1001,20 +1012,18 @@ const TeamDebateRoom: React.FC = () => {
           
           // Display what we're showing to the user
           // CRITICAL: Each user should see their own team correctly
-          // Use (data as any) to access fields that might not be in TypeScript interface
-          const dataAny = data as any;
           const myTeamReadyCount = amTeam1
-            ? (data.team1Ready ?? dataAny.team1Ready)
-            : (data.team2Ready ?? dataAny.team2Ready);
+            ? (data.team1Ready ?? 0)
+            : (data.team2Ready ?? 0);
           const myTeamTotal = amTeam1
-            ? (data.team1MembersCount ?? dataAny.team1MembersCount)
-            : (data.team2MembersCount ?? dataAny.team2MembersCount);
+            ? (data.team1MembersCount ?? 0)
+            : (data.team2MembersCount ?? 0);
           const oppReadyCount = amTeam1
-            ? (data.team2Ready ?? dataAny.team2Ready)
-            : (data.team1Ready ?? dataAny.team1Ready);
+            ? (data.team2Ready ?? 0)
+            : (data.team1Ready ?? 0);
           const oppTeamTotal = amTeam1
-            ? (data.team2MembersCount ?? dataAny.team2MembersCount)
-            : (data.team1MembersCount ?? dataAny.team1MembersCount);
+            ? (data.team2MembersCount ?? 0)
+            : (data.team1MembersCount ?? 0);
           
           console.log(`[Display] isTeam1=${amTeam1}, myTeamName=${myTeamName}`);
           console.log(`[Display] My Team (${myTeamName}) Ready: ${myTeamReadyCount}/${myTeamTotal}`);
@@ -1206,6 +1215,7 @@ const TeamDebateRoom: React.FC = () => {
       cancelled = true;
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((track) => track.stop());
+        localStreamRef.current = null;
       }
       if (wsRef.current) {
         wsRef.current.close();
@@ -1220,16 +1230,22 @@ const TeamDebateRoom: React.FC = () => {
     flushPendingCandidates,
     sendSignalMessage,
     closePeerConnection,
-    myTeamId,
-    currentUser?.id,
   ]);
 
   // Initialize Speech Recognition
   useEffect(() => {
     if (speechRecognitionDisabled) {
+      shouldListenRef.current = false;
+      isListeningRef.current = false;
+      if (recognitionRestartTimeoutRef.current) {
+        clearTimeout(recognitionRestartTimeoutRef.current);
+        recognitionRestartTimeoutRef.current = null;
+      }
       recognitionRef.current = null;
       return;
     }
+
+    let activeRecognition: SpeechRecognition | null = null;
 
     const initializeSpeechRecognition = () => {
       if (
@@ -1243,6 +1259,7 @@ const TeamDebateRoom: React.FC = () => {
           return;
         }
         const recognition = new SpeechRecognition();
+        activeRecognition = recognition;
         recognitionRef.current = recognition;
 
         recognition.continuous = true;
@@ -1250,6 +1267,7 @@ const TeamDebateRoom: React.FC = () => {
         recognition.lang = "en-US";
 
         recognition.onstart = () => {
+          isListeningRef.current = true;
           setIsListening(true);
           setSpeechError(null);
         };
@@ -1303,31 +1321,46 @@ const TeamDebateRoom: React.FC = () => {
         };
 
         recognition.onend = () => {
+          isListeningRef.current = false;
           setIsListening(false);
           if (
-            isMyTurn &&
-            debatePhase !== DebatePhase.Setup &&
-            debatePhase !== DebatePhase.Finished
-            && !speechRecognitionDisabled
+            !shouldListenRef.current ||
+            recognitionRef.current !== recognition
           ) {
-            setTimeout(() => {
-              if (recognitionRef.current) {
-                try {
-                  recognitionRef.current.start();
-      } catch (error) {
-                  console.error("Error restarting speech recognition:", error);
-                }
-              }
-            }, 100);
+            return;
           }
+
+          if (recognitionRestartTimeoutRef.current) {
+            clearTimeout(recognitionRestartTimeoutRef.current);
+          }
+          recognitionRestartTimeoutRef.current = setTimeout(() => {
+            recognitionRestartTimeoutRef.current = null;
+            if (
+              !shouldListenRef.current ||
+              recognitionRef.current !== recognition ||
+              isListeningRef.current
+            ) {
+              return;
+            }
+
+            try {
+              isListeningRef.current = true;
+              recognition.start();
+            } catch (error) {
+              isListeningRef.current = false;
+              console.error("Error restarting speech recognition:", error);
+            }
+          }, 100);
         };
 
         recognition.onerror = (event: Event) => {
+          isListeningRef.current = false;
           setIsListening(false);
           console.error("Speech recognition error:", event);
 
           const errorEvent = event as Event & { error?: string };
           if (errorEvent.error === "not-allowed") {
+            shouldListenRef.current = false;
             setSpeechRecognitionDisabled(true);
             setSpeechError(
               "Speech recognition is blocked. Please grant microphone permission or disable speech-to-text."
@@ -1351,18 +1384,42 @@ const TeamDebateRoom: React.FC = () => {
     initializeSpeechRecognition();
 
     return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.stop();
+      shouldListenRef.current = false;
+      isListeningRef.current = false;
+      if (recognitionRestartTimeoutRef.current) {
+        clearTimeout(recognitionRestartTimeoutRef.current);
+        recognitionRestartTimeoutRef.current = null;
+      }
+      if (recognitionRef.current === activeRecognition) {
+        recognitionRef.current = null;
+      }
+      if (activeRecognition) {
+        activeRecognition.onstart = null;
+        activeRecognition.onresult = null;
+        activeRecognition.onend = null;
+        activeRecognition.onerror = null;
+      }
+      try {
+        activeRecognition?.stop();
+      } catch {
+        // Recognition may already be stopped.
       }
     };
-  }, [debatePhase, isMyTurn, currentUser?.id, currentUser?.displayName, speechRecognitionDisabled]);
+  }, [
+    debatePhase,
+    isMyTurn,
+    currentUser?.id,
+    currentUser?.displayName,
+    speechRecognitionDisabled,
+  ]);
 
   // Start/stop speech recognition based on turn
   const startSpeechRecognition = useCallback(() => {
+    const recognition = recognitionRef.current;
     if (
-      !recognitionRef.current ||
+      !recognition ||
       speechRecognitionDisabled ||
-      isListening ||
+      isListeningRef.current ||
       debatePhase === DebatePhase.Setup ||
       debatePhase === DebatePhase.Finished
     ) {
@@ -1370,41 +1427,56 @@ const TeamDebateRoom: React.FC = () => {
     }
 
     try {
-      recognitionRef.current.start();
+      isListeningRef.current = true;
+      recognition.start();
     } catch (error) {
+      isListeningRef.current = false;
       console.error("Error starting speech recognition:", error);
     }
-  }, [isListening, debatePhase, speechRecognitionDisabled]);
+  }, [debatePhase, speechRecognitionDisabled]);
 
   const stopSpeechRecognition = useCallback(() => {
-    if (recognitionRef.current && isListening) {
+    const recognition = recognitionRef.current;
+    if (recognition && isListeningRef.current) {
       try {
-        recognitionRef.current.stop();
+        isListeningRef.current = false;
+        recognition.stop();
+        setIsListening(false);
       } catch (error) {
         console.error("Error stopping speech recognition:", error);
       }
     }
-  }, [isListening]);
+  }, []);
 
  
   // Auto start/stop speech recognition based on turn
   useEffect(() => {
-    if (
+    const shouldListen =
       isMyTurn &&
       debatePhase !== DebatePhase.Setup &&
-      debatePhase !== DebatePhase.Finished
-    ) {
+      debatePhase !== DebatePhase.Finished &&
+      !speechRecognitionDisabled;
+
+    shouldListenRef.current = shouldListen;
+
+    if (shouldListen) {
       startSpeechRecognition();
     } else {
       stopSpeechRecognition();
     }
 
     return () => {
+      shouldListenRef.current = false;
+      if (recognitionRestartTimeoutRef.current) {
+        clearTimeout(recognitionRestartTimeoutRef.current);
+        recognitionRestartTimeoutRef.current = null;
+      }
       stopSpeechRecognition();
     };
   }, [
     isMyTurn,
     debatePhase,
+    speechRecognitionDisabled,
     startSpeechRecognition,
     stopSpeechRecognition,
   ]);
@@ -2001,7 +2073,10 @@ const TeamDebateRoom: React.FC = () => {
                         if (el) {
                           if (isCurrentUser) {
                             localVideoRefs.current.set(member.userId, el);
-                            if (localStreamRef.current) {
+                            if (
+                              localStreamRef.current &&
+                              el.srcObject !== localStreamRef.current
+                            ) {
                               el.srcObject = localStreamRef.current;
                             }
                           } else {

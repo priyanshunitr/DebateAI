@@ -3,11 +3,13 @@ import React from 'react';
 interface SpeechTranscriptsProps {
   transcripts: { [key: string]: string };
   currentPhase: string;
+  liveTranscript?: string;
 }
 
 const SpeechTranscripts: React.FC<SpeechTranscriptsProps> = ({
   transcripts,
   currentPhase,
+  liveTranscript,
 }) => {
   const phases = [
     'openingFor',
@@ -52,6 +54,8 @@ const SpeechTranscripts: React.FC<SpeechTranscriptsProps> = ({
         {phases.map((phase) => {
           const transcript = transcripts[phase];
           const isCurrentPhase = phase === currentPhase;
+          const displayedTranscript =
+            transcript || (isCurrentPhase ? liveTranscript : undefined);
 
           return (
             <div
@@ -73,9 +77,9 @@ const SpeechTranscripts: React.FC<SpeechTranscriptsProps> = ({
                 )}
               </div>
 
-              {transcript ? (
+              {displayedTranscript ? (
                 <div className='text-sm text-gray-800 bg-white p-2 rounded border'>
-                  {transcript}
+                  {displayedTranscript}
                 </div>
               ) : (
                 <div className='text-sm text-gray-500 italic'>
