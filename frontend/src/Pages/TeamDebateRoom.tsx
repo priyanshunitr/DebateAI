@@ -3,11 +3,15 @@ import { useParams } from "react-router-dom";
 import { useAtom } from "jotai";
 import { userAtom } from "@/state/userAtom";
 import { useUser } from "@/hooks/useUser";
-import { getTeamDebate } from "@/services/teamDebateService";
+import {
+  getTeamDebate,
+  type TeamDebate,
+} from "@/services/teamDebateService";
 import { Button } from "@/components/ui/button";
 import JudgmentPopup from "@/components/JudgementPopup";
 import SpeechTranscripts from "@/components/SpeechTranscripts";
 import { getAuthToken } from "@/utils/auth";
+import { Mic, MicOff } from "lucide-react";
 
 // Define debate phases as an enum (same as OnlineDebateRoom)
 enum DebatePhase {
@@ -106,6 +110,12 @@ interface WSMessage {
   team2Ready?: number;
   team1MembersCount?: number;
   team2MembersCount?: number;
+  team1Name?: string;
+  team2Name?: string;
+  team1ReadyStatus?: Record<string, boolean>;
+  team2ReadyStatus?: Record<string, boolean>;
+  countdown?: number;
+  assignedToTeam?: "Team1" | "Team2";
   spectatorCount?: number;
   spectator?: {
     connectionId: string;
@@ -129,6 +139,26 @@ const phaseDurations: { [key in DebatePhase]?: number } = {
 const BASE_URL =
   (import.meta.env.VITE_BASE_URL as string | undefined)?.replace(/\/$/, "") ??
   window.location.origin;
+
+const WEBRTC_ICE_SERVERS: RTCIceServer[] = [
+  { urls: "stun:stun.l.google.com:19302" },
+];
+
+const turnUrl = import.meta.env.VITE_WEBRTC_TURN_URL as string | undefined;
+const turnUsername = import.meta.env.VITE_WEBRTC_TURN_USERNAME as
+  | string
+  | undefined;
+const turnCredential = import.meta.env.VITE_WEBRTC_TURN_CREDENTIAL as
+  | string
+  | undefined;
+
+if (turnUrl && turnUsername && turnCredential) {
+  WEBRTC_ICE_SERVERS.push({
+    urls: turnUrl,
+    username: turnUsername,
+    credential: turnCredential,
+  });
+}
 
 // Function to extract JSON from response
 const extractJSON = (response: string): string => {
@@ -159,7 +189,7 @@ const TeamDebateRoom: React.FC = () => {
   }, [user?.id, userFromHook?.id, currentUser?.id, isUserLoading, isAuthenticated]);
 
   // Debate state
-  const [debate, setDebate] = useState<any>(null);
+  const [debate, setDebate] = useState<TeamDebate | null>(null);
   const [topic, setTopic] = useState("");
   const [localRole, setLocalRole] = useState<DebateRole | null>(null);
   const [peerRole, setPeerRole] = useState<DebateRole | null>(null);
@@ -191,6 +221,10 @@ const TeamDebateRoom: React.FC = () => {
   const localVideoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
   const remoteVideoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
+  const reconnectTimeoutsRef = useRef<
+    Map<string, ReturnType<typeof setTimeout>>
+  >(new Map());
+  const reconnectPeerRef = useRef<(remoteUserId: string) => void>(() => {});
   const debateStartedRef = useRef<boolean>(false); // Track if debate has started to prevent popup reopening
   const currentUserIdRef = useRef<string | null>(null);
   const myTeamIdRef = useRef<string | null>(null);
@@ -206,16 +240,24 @@ const TeamDebateRoom: React.FC = () => {
   >(new Map());
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [isCameraOn, setIsCameraOn] = useState(true);
+  const isCameraOnRef = useRef(true);
+  const [isMicOn, setIsMicOn] = useState(true);
+  const isMicOnRef = useRef(true);
 
 
   // Timer state
   const [timer, setTimer] = useState<number>(0);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Speech recognition state
   const [isListening, setIsListening] = useState(false);
   const [currentTranscript, setCurrentTranscript] = useState("");
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const isListeningRef = useRef(false);
+  const shouldListenRef = useRef(false);
+  const recognitionRestartTimeoutRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
   const [speechError, setSpeechError] = useState<string | null>(null);
   const [speechTranscripts, setSpeechTranscripts] = useState<{
     [key: string]: string;
@@ -251,7 +293,7 @@ const TeamDebateRoom: React.FC = () => {
   ];
 
   const toggleCamera = useCallback(async () => {
-    const shouldEnable = !isCameraOn;
+    const shouldEnable = !isCameraOnRef.current;
 
     // Acquire a stream if we're turning the camera back on after it was released
     if (shouldEnable && !localStreamRef.current) {
@@ -259,6 +301,12 @@ const TeamDebateRoom: React.FC = () => {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { width: 1280, height: 720 },
           audio: true,
+        });
+        stream.getVideoTracks().forEach((track) => {
+          track.enabled = shouldEnable;
+        });
+        stream.getAudioTracks().forEach((track) => {
+          track.enabled = isMicOnRef.current;
         });
         localStreamRef.current = stream;
         setLocalStream(stream);
@@ -286,11 +334,39 @@ const TeamDebateRoom: React.FC = () => {
       track.enabled = shouldEnable;
     });
 
+    isCameraOnRef.current = shouldEnable;
     setIsCameraOn(shouldEnable);
     if (shouldEnable) {
       setMediaError(null);
     }
-  }, [currentUser?.id, isCameraOn, setIsCameraOn]);
+  }, [currentUser?.id]);
+
+  const toggleMicrophone = useCallback(() => {
+    const stream = localStreamRef.current;
+    if (!stream) {
+      console.warn("toggleMicrophone called without an active local stream.");
+      return;
+    }
+
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      setMediaError(
+        "No microphone is available. Please check your audio device and permissions."
+      );
+      return;
+    }
+
+    const shouldEnable = !isMicOnRef.current;
+    audioTracks.forEach((track) => {
+      track.enabled = shouldEnable;
+    });
+
+    isMicOnRef.current = shouldEnable;
+    setIsMicOn(shouldEnable);
+    if (shouldEnable) {
+      setMediaError(null);
+    }
+  }, []);
 
   
 
@@ -321,6 +397,12 @@ const TeamDebateRoom: React.FC = () => {
 
   const closePeerConnection = useCallback(
     (remoteUserId: string) => {
+      const reconnectTimeout = reconnectTimeoutsRef.current.get(remoteUserId);
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+        reconnectTimeoutsRef.current.delete(remoteUserId);
+      }
+
       const pc = pcRefs.current.get(remoteUserId);
       if (pc) {
         try {
@@ -358,9 +440,7 @@ const TeamDebateRoom: React.FC = () => {
         return undefined;
       }
 
-      const pc = new RTCPeerConnection({
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-      });
+      const pc = new RTCPeerConnection({ iceServers: WEBRTC_ICE_SERVERS });
 
       pcRefs.current.set(remoteUserId, pc);
 
@@ -393,8 +473,36 @@ const TeamDebateRoom: React.FC = () => {
 
       pc.oniceconnectionstatechange = () => {
         const state = pc.iceConnectionState;
-        if (state === "failed" || state === "disconnected" || state === "closed") {
-          closePeerConnection(remoteUserId);
+        const reconnectTimeout = reconnectTimeoutsRef.current.get(remoteUserId);
+
+        if (state === "connected" || state === "completed") {
+          if (reconnectTimeout) {
+            clearTimeout(reconnectTimeout);
+            reconnectTimeoutsRef.current.delete(remoteUserId);
+          }
+          return;
+        }
+
+        if (
+          (state === "failed" || state === "disconnected") &&
+          !reconnectTimeout
+        ) {
+          const delay = state === "failed" ? 0 : 5000;
+          const timeout = setTimeout(() => {
+            reconnectTimeoutsRef.current.delete(remoteUserId);
+
+            if (pcRefs.current.get(remoteUserId) !== pc) return;
+            if (
+              pc.iceConnectionState !== "failed" &&
+              pc.iceConnectionState !== "disconnected"
+            ) {
+              return;
+            }
+
+            closePeerConnection(remoteUserId);
+            reconnectPeerRef.current(remoteUserId);
+          }, delay);
+          reconnectTimeoutsRef.current.set(remoteUserId, timeout);
         }
       };
 
@@ -469,6 +577,13 @@ const TeamDebateRoom: React.FC = () => {
     },
     [createPeerConnection, initiateOffer]
   );
+
+  useEffect(() => {
+    reconnectPeerRef.current = ensurePeerConnection;
+    return () => {
+      reconnectPeerRef.current = () => {};
+    };
+  }, [ensurePeerConnection]);
 
   useEffect(() => {
     remoteStreams.forEach((stream, userId) => {
@@ -653,16 +768,15 @@ const TeamDebateRoom: React.FC = () => {
   }, [timer, debatePhase, isMyTurn, speechTranscripts, localRole, debateId]);
 
   useEffect(() => {
-  currentUserIdRef.current = currentUser?.id;
-  myTeamIdRef.current = myTeamId;
-  isTeam1Ref.current = isTeam1;
-  debatePhaseRef.current = debatePhase;
-}, [currentUser?.id, myTeamId, isTeam1, debatePhase]);
-
+    currentUserIdRef.current = currentUser?.id ?? null;
+    myTeamIdRef.current = myTeamId;
+    isTeam1Ref.current = isTeam1;
+    debatePhaseRef.current = debatePhase;
+  }, [currentUser?.id, myTeamId, isTeam1, debatePhase]);
 
   // Initialize WebSocket connection - only need token and debateId
   // User ID will be extracted from token on backend
- 
+
   useEffect(() => {
     const token = getAuthToken();
     if (!token || !debateId || !hasDeterminedTeam) {
@@ -681,6 +795,10 @@ const TeamDebateRoom: React.FC = () => {
     });
 
     let cancelled = false;
+    const reconnectTimeouts = reconnectTimeoutsRef.current;
+    const peerConnections = pcRefs.current;
+    const pendingCandidates = pendingCandidatesRef.current;
+    const initiatedOffers = initiatedOffersRef.current;
 
     const ensureMediaStream = async () => {
       try {
@@ -694,6 +812,12 @@ const TeamDebateRoom: React.FC = () => {
           return;
         }
 
+        stream.getVideoTracks().forEach((track) => {
+          track.enabled = isCameraOnRef.current;
+        });
+        stream.getAudioTracks().forEach((track) => {
+          track.enabled = isMicOnRef.current;
+        });
         localStreamRef.current = stream;
         setLocalStream(stream);
 
@@ -720,15 +844,19 @@ const TeamDebateRoom: React.FC = () => {
     const ws = new WebSocket(wsUrl.toString());
     wsRef.current = ws;
 
-    ws.onopen = () => {
+    ws.onopen = async () => {
       if (cancelled) {
         ws.close();
         return;
       }
 
       console.log("Team debate WebSocket connected");
+      await ensureMediaStream();
+
+      if (cancelled || ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
       ws.send(JSON.stringify({ type: "join" }));
-      ensureMediaStream();
     };
 
     ws.onmessage = async (event) => {
@@ -738,7 +866,6 @@ const TeamDebateRoom: React.FC = () => {
       const amTeam1 = isTeam1Ref.current;
       const currentMyTeamId = myTeamIdRef.current;
       const currentUserId = currentUserIdRef.current;
-      const currentPhase = debatePhaseRef.current;
 
       switch (data.type) {
         case "stateSync": {
@@ -785,24 +912,24 @@ const TeamDebateRoom: React.FC = () => {
           if (data.team2MembersCount !== undefined) setTeam2MembersCount(data.team2MembersCount);
           
           // Update team names if provided (for late joiners)
-          if ((data as any).team1Name) {
+          if (data.team1Name) {
             if (amTeam1) {
-              setMyTeamName((data as any).team1Name);
+              setMyTeamName(data.team1Name);
             } else {
-              setOpponentTeamName((data as any).team1Name);
+              setOpponentTeamName(data.team1Name);
             }
           }
-          if ((data as any).team2Name) {
+          if (data.team2Name) {
             if (amTeam1) {
-              setOpponentTeamName((data as any).team2Name);
+              setOpponentTeamName(data.team2Name);
             } else {
-              setMyTeamName((data as any).team2Name);
+              setMyTeamName(data.team2Name);
             }
           }
           
           // Update individual player ready status (for late joiners)
-          if ((data as any).team1ReadyStatus) {
-            const team1Status = (data as any).team1ReadyStatus as Record<string, boolean>;
+          if (data.team1ReadyStatus) {
+            const team1Status = data.team1ReadyStatus;
             setPlayerReadyStatus(prev => {
               const updated = new Map(prev);
               Object.entries(team1Status).forEach(([userId, ready]) => {
@@ -811,8 +938,8 @@ const TeamDebateRoom: React.FC = () => {
               return updated;
             });
           }
-          if ((data as any).team2ReadyStatus) {
-            const team2Status = (data as any).team2ReadyStatus as Record<string, boolean>;
+          if (data.team2ReadyStatus) {
+            const team2Status = data.team2ReadyStatus;
             setPlayerReadyStatus(prev => {
               const updated = new Map(prev);
               Object.entries(team2Status).forEach(([userId, ready]) => {
@@ -835,8 +962,8 @@ const TeamDebateRoom: React.FC = () => {
           
           // Update localReady if we have the user's ready status in stateSync
           if (currentUserId) {
-            const team1Status = (data as any).team1ReadyStatus as Record<string, boolean> | undefined;
-            const team2Status = (data as any).team2ReadyStatus as Record<string, boolean> | undefined;
+            const team1Status = data.team1ReadyStatus;
+            const team2Status = data.team2ReadyStatus;
             if (amTeam1 && team1Status && team1Status[currentUserId] !== undefined) {
               setLocalReady(team1Status[currentUserId]);
             } else if (!amTeam1 && team2Status && team2Status[currentUserId] !== undefined) {
@@ -914,7 +1041,7 @@ const TeamDebateRoom: React.FC = () => {
         }
         case "countdownStart": {
           // Backend is starting countdown - show it to all users
-          const countdownValue = (data as any).countdown || 3;
+          const countdownValue = data.countdown || 3;
           console.log('✓✓✓ COUNTDOWN STARTED FROM BACKEND:', countdownValue);
           setCountdown(countdownValue);
           // Hide setup popup when countdown starts
@@ -929,12 +1056,12 @@ const TeamDebateRoom: React.FC = () => {
         case "ready": {
           console.log("=== READY MESSAGE RECEIVED ===");
           console.log("Received ready message:", data);
-          console.log("Current user:", currentUser?.id);
+          console.log("Current user:", currentUserId);
           console.log("Message userId:", data.userId);
           console.log("Message teamId:", data.teamId);
-          console.log("Message assignedToTeam:", (data as any).assignedToTeam);
-          console.log("isTeam1:", isTeam1);
-          console.log("myTeamId:", myTeamId);
+          console.log("Message assignedToTeam:", data.assignedToTeam);
+          console.log("isTeam1:", amTeam1);
+          console.log("myTeamId:", currentMyTeamId);
           console.log(
             "Team1Ready:",
             data.team1Ready,
@@ -951,7 +1078,7 @@ const TeamDebateRoom: React.FC = () => {
           // CRITICAL: Verify the ready status is assigned to the correct team
           const messageTeamId = data.teamId;
           const expectedTeamId = currentMyTeamId; // Should be the same regardless of isTeam1
-          const assignedTeam = (data as any).assignedToTeam;
+          const assignedTeam = data.assignedToTeam;
           
           // Update the ready status for the specific user who clicked
           if (data.userId === currentUserId && data.ready !== undefined) {
@@ -981,9 +1108,8 @@ const TeamDebateRoom: React.FC = () => {
             setTeam2ReadyCount(data.team2Ready);
           }
           // CRITICAL: Update member counts from ready message
-          // Check both direct access and through (data as any) to handle type issues
-          const team1Count = data.team1MembersCount ?? (data as any).team1MembersCount;
-          const team2Count = data.team2MembersCount ?? (data as any).team2MembersCount;
+          const team1Count = data.team1MembersCount;
+          const team2Count = data.team2MembersCount;
           
           if (team1Count !== undefined && team1Count !== null) {
             console.log(`✓ Updating team1MembersCount to ${team1Count}`);
@@ -1001,20 +1127,18 @@ const TeamDebateRoom: React.FC = () => {
           
           // Display what we're showing to the user
           // CRITICAL: Each user should see their own team correctly
-          // Use (data as any) to access fields that might not be in TypeScript interface
-          const dataAny = data as any;
           const myTeamReadyCount = amTeam1
-            ? (data.team1Ready ?? dataAny.team1Ready)
-            : (data.team2Ready ?? dataAny.team2Ready);
+            ? (data.team1Ready ?? 0)
+            : (data.team2Ready ?? 0);
           const myTeamTotal = amTeam1
-            ? (data.team1MembersCount ?? dataAny.team1MembersCount)
-            : (data.team2MembersCount ?? dataAny.team2MembersCount);
+            ? (data.team1MembersCount ?? 0)
+            : (data.team2MembersCount ?? 0);
           const oppReadyCount = amTeam1
-            ? (data.team2Ready ?? dataAny.team2Ready)
-            : (data.team1Ready ?? dataAny.team1Ready);
+            ? (data.team2Ready ?? 0)
+            : (data.team1Ready ?? 0);
           const oppTeamTotal = amTeam1
-            ? (data.team2MembersCount ?? dataAny.team2MembersCount)
-            : (data.team1MembersCount ?? dataAny.team1MembersCount);
+            ? (data.team2MembersCount ?? 0)
+            : (data.team1MembersCount ?? 0);
           
           console.log(`[Display] isTeam1=${amTeam1}, myTeamName=${myTeamName}`);
           console.log(`[Display] My Team (${myTeamName}) Ready: ${myTeamReadyCount}/${myTeamTotal}`);
@@ -1100,6 +1224,18 @@ const TeamDebateRoom: React.FC = () => {
               setMyTeamMembers(data.team2Members);
             }
           }
+          break;
+        }
+        case "participantJoined": {
+          if (!data.userId || data.userId === currentUserId) {
+            break;
+          }
+
+          // A previous offer may have been attempted while this participant
+          // was offline. Reset that stale attempt and negotiate again now that
+          // the backend has confirmed the target is ready for WebRTC offers.
+          closePeerConnection(data.userId);
+          ensurePeerConnection(data.userId);
           break;
         }
         case "offer":
@@ -1206,30 +1342,43 @@ const TeamDebateRoom: React.FC = () => {
       cancelled = true;
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((track) => track.stop());
+        localStreamRef.current = null;
       }
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
       }
-      pcRefs.current.forEach((pc) => pc.close());
+      reconnectTimeouts.forEach((timeout) => clearTimeout(timeout));
+      reconnectTimeouts.clear();
+      peerConnections.forEach((pc) => pc.close());
+      peerConnections.clear();
+      pendingCandidates.clear();
+      initiatedOffers.clear();
     };
   }, [
     debateId,
     hasDeterminedTeam,
     createPeerConnection,
+    ensurePeerConnection,
     flushPendingCandidates,
     sendSignalMessage,
     closePeerConnection,
-    myTeamId,
-    currentUser?.id,
   ]);
 
   // Initialize Speech Recognition
   useEffect(() => {
     if (speechRecognitionDisabled) {
+      shouldListenRef.current = false;
+      isListeningRef.current = false;
+      if (recognitionRestartTimeoutRef.current) {
+        clearTimeout(recognitionRestartTimeoutRef.current);
+        recognitionRestartTimeoutRef.current = null;
+      }
       recognitionRef.current = null;
       return;
     }
+
+    let activeRecognition: SpeechRecognition | null = null;
 
     const initializeSpeechRecognition = () => {
       if (
@@ -1243,6 +1392,7 @@ const TeamDebateRoom: React.FC = () => {
           return;
         }
         const recognition = new SpeechRecognition();
+        activeRecognition = recognition;
         recognitionRef.current = recognition;
 
         recognition.continuous = true;
@@ -1250,6 +1400,7 @@ const TeamDebateRoom: React.FC = () => {
         recognition.lang = "en-US";
 
         recognition.onstart = () => {
+          isListeningRef.current = true;
           setIsListening(true);
           setSpeechError(null);
         };
@@ -1303,31 +1454,46 @@ const TeamDebateRoom: React.FC = () => {
         };
 
         recognition.onend = () => {
+          isListeningRef.current = false;
           setIsListening(false);
           if (
-            isMyTurn &&
-            debatePhase !== DebatePhase.Setup &&
-            debatePhase !== DebatePhase.Finished
-            && !speechRecognitionDisabled
+            !shouldListenRef.current ||
+            recognitionRef.current !== recognition
           ) {
-            setTimeout(() => {
-              if (recognitionRef.current) {
-                try {
-                  recognitionRef.current.start();
-      } catch (error) {
-                  console.error("Error restarting speech recognition:", error);
-                }
-              }
-            }, 100);
+            return;
           }
+
+          if (recognitionRestartTimeoutRef.current) {
+            clearTimeout(recognitionRestartTimeoutRef.current);
+          }
+          recognitionRestartTimeoutRef.current = setTimeout(() => {
+            recognitionRestartTimeoutRef.current = null;
+            if (
+              !shouldListenRef.current ||
+              recognitionRef.current !== recognition ||
+              isListeningRef.current
+            ) {
+              return;
+            }
+
+            try {
+              isListeningRef.current = true;
+              recognition.start();
+            } catch (error) {
+              isListeningRef.current = false;
+              console.error("Error restarting speech recognition:", error);
+            }
+          }, 100);
         };
 
         recognition.onerror = (event: Event) => {
+          isListeningRef.current = false;
           setIsListening(false);
           console.error("Speech recognition error:", event);
 
           const errorEvent = event as Event & { error?: string };
           if (errorEvent.error === "not-allowed") {
+            shouldListenRef.current = false;
             setSpeechRecognitionDisabled(true);
             setSpeechError(
               "Speech recognition is blocked. Please grant microphone permission or disable speech-to-text."
@@ -1351,18 +1517,42 @@ const TeamDebateRoom: React.FC = () => {
     initializeSpeechRecognition();
 
     return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.stop();
+      shouldListenRef.current = false;
+      isListeningRef.current = false;
+      if (recognitionRestartTimeoutRef.current) {
+        clearTimeout(recognitionRestartTimeoutRef.current);
+        recognitionRestartTimeoutRef.current = null;
+      }
+      if (recognitionRef.current === activeRecognition) {
+        recognitionRef.current = null;
+      }
+      if (activeRecognition) {
+        activeRecognition.onstart = null;
+        activeRecognition.onresult = null;
+        activeRecognition.onend = null;
+        activeRecognition.onerror = null;
+      }
+      try {
+        activeRecognition?.stop();
+      } catch {
+        // Recognition may already be stopped.
       }
     };
-  }, [debatePhase, isMyTurn, currentUser?.id, currentUser?.displayName, speechRecognitionDisabled]);
+  }, [
+    debatePhase,
+    isMyTurn,
+    currentUser?.id,
+    currentUser?.displayName,
+    speechRecognitionDisabled,
+  ]);
 
   // Start/stop speech recognition based on turn
   const startSpeechRecognition = useCallback(() => {
+    const recognition = recognitionRef.current;
     if (
-      !recognitionRef.current ||
+      !recognition ||
       speechRecognitionDisabled ||
-      isListening ||
+      isListeningRef.current ||
       debatePhase === DebatePhase.Setup ||
       debatePhase === DebatePhase.Finished
     ) {
@@ -1370,41 +1560,58 @@ const TeamDebateRoom: React.FC = () => {
     }
 
     try {
-      recognitionRef.current.start();
+      isListeningRef.current = true;
+      recognition.start();
     } catch (error) {
+      isListeningRef.current = false;
       console.error("Error starting speech recognition:", error);
     }
-  }, [isListening, debatePhase, speechRecognitionDisabled]);
+  }, [debatePhase, speechRecognitionDisabled]);
 
   const stopSpeechRecognition = useCallback(() => {
-    if (recognitionRef.current && isListening) {
+    const recognition = recognitionRef.current;
+    if (recognition && isListeningRef.current) {
       try {
-        recognitionRef.current.stop();
+        isListeningRef.current = false;
+        recognition.stop();
+        setIsListening(false);
       } catch (error) {
         console.error("Error stopping speech recognition:", error);
       }
     }
-  }, [isListening]);
+  }, []);
 
  
   // Auto start/stop speech recognition based on turn
   useEffect(() => {
-    if (
+    const shouldListen =
       isMyTurn &&
       debatePhase !== DebatePhase.Setup &&
-      debatePhase !== DebatePhase.Finished
-    ) {
+      debatePhase !== DebatePhase.Finished &&
+      isMicOn &&
+      !speechRecognitionDisabled;
+
+    shouldListenRef.current = shouldListen;
+
+    if (shouldListen) {
       startSpeechRecognition();
     } else {
       stopSpeechRecognition();
     }
 
     return () => {
+      shouldListenRef.current = false;
+      if (recognitionRestartTimeoutRef.current) {
+        clearTimeout(recognitionRestartTimeoutRef.current);
+        recognitionRestartTimeoutRef.current = null;
+      }
       stopSpeechRecognition();
     };
   }, [
     isMyTurn,
     debatePhase,
+    isMicOn,
+    speechRecognitionDisabled,
     startSpeechRecognition,
     stopSpeechRecognition,
   ]);
@@ -1968,22 +2175,37 @@ const TeamDebateRoom: React.FC = () => {
                       {isCurrentUser && " (You)"}
                     </span>
                     {isCurrentUser && (
-                      <button
-                        onClick={toggleCamera}
-                        className="ml-2 p-1 rounded bg-white bg-opacity-20 hover:bg-opacity-30 transition"
-                        title={isCameraOn ? "Turn camera off" : "Turn camera on"}
-                      >
-                        {isCameraOn ? (
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="white">
-                            <path d="M17 10.5V7a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3.5l4 4v-11l-4 4z"/>
-                          </svg>
-                        ) : (
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="white">
-                            <path d="M21 6.5l-4-4v3.5H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h13v3.5l4-4v-11z" fill="white" opacity="0.5"/>
-                            <line x1="2" y1="2" x2="22" y2="22" stroke="white" strokeWidth="2" strokeLinecap="round"/>
-                          </svg>
-                        )}
-                      </button>
+                      <>
+                        <button
+                          onClick={toggleCamera}
+                          className="ml-2 p-1 rounded bg-white bg-opacity-20 hover:bg-opacity-30 transition"
+                          title={isCameraOn ? "Turn camera off" : "Turn camera on"}
+                          aria-label={isCameraOn ? "Turn camera off" : "Turn camera on"}
+                        >
+                          {isCameraOn ? (
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="white">
+                              <path d="M17 10.5V7a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3.5l4 4v-11l-4 4z"/>
+                            </svg>
+                          ) : (
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="white">
+                              <path d="M21 6.5l-4-4v3.5H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h13v3.5l4-4v-11z" fill="white" opacity="0.5"/>
+                              <line x1="2" y1="2" x2="22" y2="22" stroke="white" strokeWidth="2" strokeLinecap="round"/>
+                            </svg>
+                          )}
+                        </button>
+                        <button
+                          onClick={toggleMicrophone}
+                          className="p-1 rounded bg-white bg-opacity-20 hover:bg-opacity-30 transition"
+                          title={isMicOn ? "Turn microphone off" : "Turn microphone on"}
+                          aria-label={isMicOn ? "Turn microphone off" : "Turn microphone on"}
+                        >
+                          {isMicOn ? (
+                            <Mic className="h-4 w-4 text-white" />
+                          ) : (
+                            <MicOff className="h-4 w-4 text-white" />
+                          )}
+                        </button>
+                      </>
                     )}
                   </div>
                   {isCurrentUser && !isCameraOn ? (
@@ -2001,7 +2223,10 @@ const TeamDebateRoom: React.FC = () => {
                         if (el) {
                           if (isCurrentUser) {
                             localVideoRefs.current.set(member.userId, el);
-                            if (localStreamRef.current) {
+                            if (
+                              localStreamRef.current &&
+                              el.srcObject !== localStreamRef.current
+                            ) {
                               el.srcObject = localStreamRef.current;
                             }
                           } else {
@@ -2036,7 +2261,7 @@ const TeamDebateRoom: React.FC = () => {
                 </span>
               </div>
             )}
-            {/* Camera Toggle Button - Only show for current user's team */}
+            {/* Media controls - Only show for current user's team */}
             {currentUser && myTeamMembers.some(m => m.userId === currentUser.id) && (
               <div className="flex items-center justify-center gap-2 mt-2">
                 <button
@@ -2063,6 +2288,30 @@ const TeamDebateRoom: React.FC = () => {
                           <line x1="2" y1="2" x2="22" y2="22" strokeWidth="2" strokeLinecap="round"/>
                         </svg>
                         Camera Off
+                      </>
+                    )}
+                  </span>
+                </button>
+                <button
+                  onClick={toggleMicrophone}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+                    isMicOn
+                      ? "bg-green-500 text-white hover:bg-green-600"
+                      : "bg-gray-400 text-white hover:bg-gray-500"
+                  }`}
+                  title={isMicOn ? "Turn microphone off" : "Turn microphone on"}
+                  aria-label={isMicOn ? "Turn microphone off" : "Turn microphone on"}
+                >
+                  <span className="flex items-center gap-1.5">
+                    {isMicOn ? (
+                      <>
+                        <Mic className="h-4 w-4" />
+                        Mic On
+                      </>
+                    ) : (
+                      <>
+                        <MicOff className="h-4 w-4" />
+                        Mic Off
                       </>
                     )}
                   </span>

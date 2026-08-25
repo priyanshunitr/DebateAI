@@ -516,6 +516,20 @@ func handleTeamJoin(room *TeamRoom, conn *websocket.Conn, message TeamMessage, c
 			log.Printf("Team WebSocket write error in room %s: %v", roomKey, err)
 		}
 	}
+
+	// Notify existing participants only after the joining client has acquired
+	// local media and explicitly announced that it is ready for WebRTC offers.
+	joinPayload := map[string]any{
+		"type":     "participantJoined",
+		"userId":   client.UserID.Hex(),
+		"username": client.Username,
+		"teamId":   client.TeamID.Hex(),
+	}
+	for _, r := range snapshotTeamRecipients(room, conn) {
+		if err := r.SafeWriteJSON(joinPayload); err != nil {
+			log.Printf("Team WebSocket participant join notification error in room %s: %v", roomKey, err)
+		}
+	}
 }
 
 // handleTeamChatMessage handles team chat messages
