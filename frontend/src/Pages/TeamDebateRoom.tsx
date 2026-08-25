@@ -29,6 +29,7 @@ enum DebatePhase {
 
 // Define debate roles
 type DebateRole = "for" | "against";
+type MicControlState = "on" | "off" | "disabled";
 
 type JudgmentData = {
   opening_statement: {
@@ -243,6 +244,7 @@ const TeamDebateRoom: React.FC = () => {
   const isCameraOnRef = useRef(true);
   const [isMicOn, setIsMicOn] = useState(true);
   const isMicOnRef = useRef(true);
+  const isMicAvailableRef = useRef(false);
 
 
   // Timer state
@@ -250,7 +252,6 @@ const TeamDebateRoom: React.FC = () => {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Speech recognition state
-  const [isListening, setIsListening] = useState(false);
   const [currentTranscript, setCurrentTranscript] = useState("");
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const isListeningRef = useRef(false);
@@ -306,7 +307,8 @@ const TeamDebateRoom: React.FC = () => {
           track.enabled = shouldEnable;
         });
         stream.getAudioTracks().forEach((track) => {
-          track.enabled = isMicOnRef.current;
+          track.enabled =
+            isMicAvailableRef.current && isMicOnRef.current;
         });
         localStreamRef.current = stream;
         setLocalStream(stream);
@@ -340,35 +342,6 @@ const TeamDebateRoom: React.FC = () => {
       setMediaError(null);
     }
   }, [currentUser?.id]);
-
-  const toggleMicrophone = useCallback(() => {
-    const stream = localStreamRef.current;
-    if (!stream) {
-      console.warn("toggleMicrophone called without an active local stream.");
-      return;
-    }
-
-    const audioTracks = stream.getAudioTracks();
-    if (audioTracks.length === 0) {
-      setMediaError(
-        "No microphone is available. Please check your audio device and permissions."
-      );
-      return;
-    }
-
-    const shouldEnable = !isMicOnRef.current;
-    audioTracks.forEach((track) => {
-      track.enabled = shouldEnable;
-    });
-
-    isMicOnRef.current = shouldEnable;
-    setIsMicOn(shouldEnable);
-    if (shouldEnable) {
-      setMediaError(null);
-    }
-  }, []);
-
-  
 
   const pendingCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const initiatedOffersRef = useRef<Set<string>>(new Set());
@@ -646,6 +619,65 @@ const TeamDebateRoom: React.FC = () => {
     return false;
   }, [debatePhase, localRole]);
 
+  const isMicAvailable =
+    isMyTurn &&
+    debatePhase !== DebatePhase.Setup &&
+    debatePhase !== DebatePhase.Finished;
+  const micControlState: MicControlState = !isMicAvailable
+    ? "disabled"
+    : isMicOn
+      ? "on"
+      : "off";
+  const micControlLabel =
+    micControlState === "disabled"
+      ? "Mic Disabled"
+      : micControlState === "on"
+        ? "Mic On"
+        : "Mic Off";
+  const micControlTitle =
+    micControlState === "disabled"
+      ? "Microphone disabled until your turn"
+      : micControlState === "on"
+        ? "Turn microphone off"
+        : "Turn microphone on";
+
+  useEffect(() => {
+    isMicAvailableRef.current = isMicAvailable;
+    const shouldEnableTrack = isMicAvailable && isMicOn;
+    localStreamRef.current?.getAudioTracks().forEach((track) => {
+      track.enabled = shouldEnableTrack;
+    });
+  }, [isMicAvailable, isMicOn, localStream]);
+
+  const toggleMicrophone = useCallback(() => {
+    if (!isMicAvailable) return;
+
+    const stream = localStreamRef.current;
+    if (!stream) {
+      console.warn("toggleMicrophone called without an active local stream.");
+      return;
+    }
+
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      setMediaError(
+        "No microphone is available. Please check your audio device and permissions."
+      );
+      return;
+    }
+
+    const shouldEnable = !isMicOnRef.current;
+    audioTracks.forEach((track) => {
+      track.enabled = shouldEnable;
+    });
+
+    isMicOnRef.current = shouldEnable;
+    setIsMicOn(shouldEnable);
+    if (shouldEnable) {
+      setMediaError(null);
+    }
+  }, [isMicAvailable]);
+
   // Fetch debate details - proceed if we have debateId and either user or token
   useEffect(() => {
     const fetchDebate = async () => {
@@ -816,7 +848,8 @@ const TeamDebateRoom: React.FC = () => {
           track.enabled = isCameraOnRef.current;
         });
         stream.getAudioTracks().forEach((track) => {
-          track.enabled = isMicOnRef.current;
+          track.enabled =
+            isMicAvailableRef.current && isMicOnRef.current;
         });
         localStreamRef.current = stream;
         setLocalStream(stream);
@@ -1401,7 +1434,6 @@ const TeamDebateRoom: React.FC = () => {
 
         recognition.onstart = () => {
           isListeningRef.current = true;
-          setIsListening(true);
           setSpeechError(null);
         };
 
@@ -1455,7 +1487,6 @@ const TeamDebateRoom: React.FC = () => {
 
         recognition.onend = () => {
           isListeningRef.current = false;
-          setIsListening(false);
           if (
             !shouldListenRef.current ||
             recognitionRef.current !== recognition
@@ -1488,7 +1519,6 @@ const TeamDebateRoom: React.FC = () => {
 
         recognition.onerror = (event: Event) => {
           isListeningRef.current = false;
-          setIsListening(false);
           console.error("Speech recognition error:", event);
 
           const errorEvent = event as Event & { error?: string };
@@ -1574,7 +1604,6 @@ const TeamDebateRoom: React.FC = () => {
       try {
         isListeningRef.current = false;
         recognition.stop();
-        setIsListening(false);
       } catch (error) {
         console.error("Error stopping speech recognition:", error);
       }
@@ -1585,9 +1614,7 @@ const TeamDebateRoom: React.FC = () => {
   // Auto start/stop speech recognition based on turn
   useEffect(() => {
     const shouldListen =
-      isMyTurn &&
-      debatePhase !== DebatePhase.Setup &&
-      debatePhase !== DebatePhase.Finished &&
+      isMicAvailable &&
       isMicOn &&
       !speechRecognitionDisabled;
 
@@ -1608,8 +1635,7 @@ const TeamDebateRoom: React.FC = () => {
       stopSpeechRecognition();
     };
   }, [
-    isMyTurn,
-    debatePhase,
+    isMicAvailable,
     isMicOn,
     speechRecognitionDisabled,
     startSpeechRecognition,
@@ -2195,11 +2221,18 @@ const TeamDebateRoom: React.FC = () => {
                         </button>
                         <button
                           onClick={toggleMicrophone}
-                          className="p-1 rounded bg-white bg-opacity-20 hover:bg-opacity-30 transition"
-                          title={isMicOn ? "Turn microphone off" : "Turn microphone on"}
-                          aria-label={isMicOn ? "Turn microphone off" : "Turn microphone on"}
+                          disabled={micControlState === "disabled"}
+                          className={`p-1 rounded text-white transition ${
+                            micControlState === "on"
+                              ? "bg-green-500 hover:bg-green-600"
+                              : micControlState === "off"
+                                ? "bg-red-500 hover:bg-red-600"
+                                : "bg-gray-400 cursor-not-allowed opacity-70"
+                          }`}
+                          title={micControlTitle}
+                          aria-label={micControlTitle}
                         >
-                          {isMicOn ? (
+                          {micControlState === "on" ? (
                             <Mic className="h-4 w-4 text-white" />
                           ) : (
                             <MicOff className="h-4 w-4 text-white" />
@@ -2253,11 +2286,25 @@ const TeamDebateRoom: React.FC = () => {
             <p className="text-xs text-center text-gray-600">
               Time: {formatTime(isMyTurn ? timer : phaseDurations[debatePhase] || 0)}
             </p>
-            {isMyTurn && debatePhase !== DebatePhase.Setup && debatePhase !== DebatePhase.Finished && (
+            {isMicAvailable && (
               <div className="flex items-center justify-center gap-2 mt-2">
-                <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                <span className="text-sm text-green-600">
-                  {isListening ? "Recording & Speech Recognition Active" : "Waiting..."}
+                <div
+                  className={`w-3 h-3 rounded-full ${
+                    micControlState === "on"
+                      ? "bg-green-500 animate-pulse"
+                      : "bg-red-500"
+                  }`}
+                ></div>
+                <span
+                  className={`text-sm ${
+                    micControlState === "on"
+                      ? "text-green-600"
+                      : "text-red-600"
+                  }`}
+                >
+                  {micControlState === "on"
+                    ? "Recording & Speech Recognition Active"
+                    : "Microphone Off"}
                 </span>
               </div>
             )}
@@ -2294,24 +2341,27 @@ const TeamDebateRoom: React.FC = () => {
                 </button>
                 <button
                   onClick={toggleMicrophone}
+                  disabled={micControlState === "disabled"}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-                    isMicOn
+                    micControlState === "on"
                       ? "bg-green-500 text-white hover:bg-green-600"
-                      : "bg-gray-400 text-white hover:bg-gray-500"
+                      : micControlState === "off"
+                        ? "bg-red-500 text-white hover:bg-red-600"
+                        : "bg-gray-400 text-white cursor-not-allowed opacity-70"
                   }`}
-                  title={isMicOn ? "Turn microphone off" : "Turn microphone on"}
-                  aria-label={isMicOn ? "Turn microphone off" : "Turn microphone on"}
+                  title={micControlTitle}
+                  aria-label={micControlTitle}
                 >
                   <span className="flex items-center gap-1.5">
-                    {isMicOn ? (
+                    {micControlState === "on" ? (
                       <>
                         <Mic className="h-4 w-4" />
-                        Mic On
+                        {micControlLabel}
                       </>
                     ) : (
                       <>
                         <MicOff className="h-4 w-4" />
-                        Mic Off
+                        {micControlLabel}
                       </>
                     )}
                   </span>
