@@ -795,6 +795,10 @@ const TeamDebateRoom: React.FC = () => {
     });
 
     let cancelled = false;
+    const reconnectTimeouts = reconnectTimeoutsRef.current;
+    const peerConnections = pcRefs.current;
+    const pendingCandidates = pendingCandidatesRef.current;
+    const initiatedOffers = initiatedOffersRef.current;
 
     const ensureMediaStream = async () => {
       try {
@@ -1344,12 +1348,12 @@ const TeamDebateRoom: React.FC = () => {
         wsRef.current.close();
         wsRef.current = null;
       }
-      reconnectTimeoutsRef.current.forEach((timeout) => clearTimeout(timeout));
-      reconnectTimeoutsRef.current.clear();
-      pcRefs.current.forEach((pc) => pc.close());
-      pcRefs.current.clear();
-      pendingCandidatesRef.current.clear();
-      initiatedOffersRef.current.clear();
+      reconnectTimeouts.forEach((timeout) => clearTimeout(timeout));
+      reconnectTimeouts.clear();
+      peerConnections.forEach((pc) => pc.close());
+      peerConnections.clear();
+      pendingCandidates.clear();
+      initiatedOffers.clear();
     };
   }, [
     debateId,
