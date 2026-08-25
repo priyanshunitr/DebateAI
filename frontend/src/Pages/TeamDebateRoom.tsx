@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import JudgmentPopup from "@/components/JudgementPopup";
 import SpeechTranscripts from "@/components/SpeechTranscripts";
 import { getAuthToken } from "@/utils/auth";
+import { Mic, MicOff } from "lucide-react";
 
 // Define debate phases as an enum (same as OnlineDebateRoom)
 enum DebatePhase {
@@ -215,6 +216,9 @@ const TeamDebateRoom: React.FC = () => {
   >(new Map());
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [isCameraOn, setIsCameraOn] = useState(true);
+  const isCameraOnRef = useRef(true);
+  const [isMicOn, setIsMicOn] = useState(true);
+  const isMicOnRef = useRef(true);
 
 
   // Timer state
@@ -265,7 +269,7 @@ const TeamDebateRoom: React.FC = () => {
   ];
 
   const toggleCamera = useCallback(async () => {
-    const shouldEnable = !isCameraOn;
+    const shouldEnable = !isCameraOnRef.current;
 
     // Acquire a stream if we're turning the camera back on after it was released
     if (shouldEnable && !localStreamRef.current) {
@@ -273,6 +277,12 @@ const TeamDebateRoom: React.FC = () => {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { width: 1280, height: 720 },
           audio: true,
+        });
+        stream.getVideoTracks().forEach((track) => {
+          track.enabled = shouldEnable;
+        });
+        stream.getAudioTracks().forEach((track) => {
+          track.enabled = isMicOnRef.current;
         });
         localStreamRef.current = stream;
         setLocalStream(stream);
@@ -300,11 +310,39 @@ const TeamDebateRoom: React.FC = () => {
       track.enabled = shouldEnable;
     });
 
+    isCameraOnRef.current = shouldEnable;
     setIsCameraOn(shouldEnable);
     if (shouldEnable) {
       setMediaError(null);
     }
-  }, [currentUser?.id, isCameraOn, setIsCameraOn]);
+  }, [currentUser?.id]);
+
+  const toggleMicrophone = useCallback(() => {
+    const stream = localStreamRef.current;
+    if (!stream) {
+      console.warn("toggleMicrophone called without an active local stream.");
+      return;
+    }
+
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      setMediaError(
+        "No microphone is available. Please check your audio device and permissions."
+      );
+      return;
+    }
+
+    const shouldEnable = !isMicOnRef.current;
+    audioTracks.forEach((track) => {
+      track.enabled = shouldEnable;
+    });
+
+    isMicOnRef.current = shouldEnable;
+    setIsMicOn(shouldEnable);
+    if (shouldEnable) {
+      setMediaError(null);
+    }
+  }, []);
 
   
 
@@ -707,6 +745,12 @@ const TeamDebateRoom: React.FC = () => {
           return;
         }
 
+        stream.getVideoTracks().forEach((track) => {
+          track.enabled = isCameraOnRef.current;
+        });
+        stream.getAudioTracks().forEach((track) => {
+          track.enabled = isMicOnRef.current;
+        });
         localStreamRef.current = stream;
         setLocalStream(stream);
 
@@ -1455,6 +1499,7 @@ const TeamDebateRoom: React.FC = () => {
       isMyTurn &&
       debatePhase !== DebatePhase.Setup &&
       debatePhase !== DebatePhase.Finished &&
+      isMicOn &&
       !speechRecognitionDisabled;
 
     shouldListenRef.current = shouldListen;
@@ -1476,6 +1521,7 @@ const TeamDebateRoom: React.FC = () => {
   }, [
     isMyTurn,
     debatePhase,
+    isMicOn,
     speechRecognitionDisabled,
     startSpeechRecognition,
     stopSpeechRecognition,
@@ -2040,22 +2086,37 @@ const TeamDebateRoom: React.FC = () => {
                       {isCurrentUser && " (You)"}
                     </span>
                     {isCurrentUser && (
-                      <button
-                        onClick={toggleCamera}
-                        className="ml-2 p-1 rounded bg-white bg-opacity-20 hover:bg-opacity-30 transition"
-                        title={isCameraOn ? "Turn camera off" : "Turn camera on"}
-                      >
-                        {isCameraOn ? (
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="white">
-                            <path d="M17 10.5V7a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3.5l4 4v-11l-4 4z"/>
-                          </svg>
-                        ) : (
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="white">
-                            <path d="M21 6.5l-4-4v3.5H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h13v3.5l4-4v-11z" fill="white" opacity="0.5"/>
-                            <line x1="2" y1="2" x2="22" y2="22" stroke="white" strokeWidth="2" strokeLinecap="round"/>
-                          </svg>
-                        )}
-                      </button>
+                      <>
+                        <button
+                          onClick={toggleCamera}
+                          className="ml-2 p-1 rounded bg-white bg-opacity-20 hover:bg-opacity-30 transition"
+                          title={isCameraOn ? "Turn camera off" : "Turn camera on"}
+                          aria-label={isCameraOn ? "Turn camera off" : "Turn camera on"}
+                        >
+                          {isCameraOn ? (
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="white">
+                              <path d="M17 10.5V7a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3.5l4 4v-11l-4 4z"/>
+                            </svg>
+                          ) : (
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="white">
+                              <path d="M21 6.5l-4-4v3.5H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h13v3.5l4-4v-11z" fill="white" opacity="0.5"/>
+                              <line x1="2" y1="2" x2="22" y2="22" stroke="white" strokeWidth="2" strokeLinecap="round"/>
+                            </svg>
+                          )}
+                        </button>
+                        <button
+                          onClick={toggleMicrophone}
+                          className="p-1 rounded bg-white bg-opacity-20 hover:bg-opacity-30 transition"
+                          title={isMicOn ? "Turn microphone off" : "Turn microphone on"}
+                          aria-label={isMicOn ? "Turn microphone off" : "Turn microphone on"}
+                        >
+                          {isMicOn ? (
+                            <Mic className="h-4 w-4 text-white" />
+                          ) : (
+                            <MicOff className="h-4 w-4 text-white" />
+                          )}
+                        </button>
+                      </>
                     )}
                   </div>
                   {isCurrentUser && !isCameraOn ? (
@@ -2111,7 +2172,7 @@ const TeamDebateRoom: React.FC = () => {
                 </span>
               </div>
             )}
-            {/* Camera Toggle Button - Only show for current user's team */}
+            {/* Media controls - Only show for current user's team */}
             {currentUser && myTeamMembers.some(m => m.userId === currentUser.id) && (
               <div className="flex items-center justify-center gap-2 mt-2">
                 <button
@@ -2138,6 +2199,30 @@ const TeamDebateRoom: React.FC = () => {
                           <line x1="2" y1="2" x2="22" y2="22" strokeWidth="2" strokeLinecap="round"/>
                         </svg>
                         Camera Off
+                      </>
+                    )}
+                  </span>
+                </button>
+                <button
+                  onClick={toggleMicrophone}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+                    isMicOn
+                      ? "bg-green-500 text-white hover:bg-green-600"
+                      : "bg-gray-400 text-white hover:bg-gray-500"
+                  }`}
+                  title={isMicOn ? "Turn microphone off" : "Turn microphone on"}
+                  aria-label={isMicOn ? "Turn microphone off" : "Turn microphone on"}
+                >
+                  <span className="flex items-center gap-1.5">
+                    {isMicOn ? (
+                      <>
+                        <Mic className="h-4 w-4" />
+                        Mic On
+                      </>
+                    ) : (
+                      <>
+                        <MicOff className="h-4 w-4" />
+                        Mic Off
                       </>
                     )}
                   </span>
