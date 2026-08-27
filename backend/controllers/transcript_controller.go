@@ -21,6 +21,7 @@ import (
 type SubmitTranscriptsRequest struct {
 	RoomID              string            `json:"roomId" binding:"required"`
 	Role                string            `json:"role" binding:"required"`
+	Topic               string            `json:"topic"`
 	Transcripts         map[string]string `json:"transcripts" binding:"required"`
 	OpponentRole        string            `json:"opponentRole"`
 	OpponentID          string            `json:"opponentId"`
@@ -48,7 +49,7 @@ func SubmitTranscripts(c *gin.Context) {
 
 	token = strings.TrimPrefix(token, "Bearer ")
 	valid, email, err := utils.ValidateTokenAndFetchEmail("./config/config.prod.yml", token, c)
- 	if err != nil || !valid || email == "" {
+	if err != nil || !valid || email == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
 		return
 	}
@@ -63,6 +64,7 @@ func SubmitTranscripts(c *gin.Context) {
 		req.RoomID,
 		req.Role,
 		email,
+		req.Topic,
 		req.Transcripts,
 		req.OpponentRole,
 		req.OpponentID,

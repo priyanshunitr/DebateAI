@@ -630,6 +630,7 @@ const OnlineDebateRoom = (): JSX.Element => {
             body: JSON.stringify({
               roomId,
               role,
+              topic,
               transcripts,
               opponentRole,
               opponentId,
@@ -684,7 +685,7 @@ const OnlineDebateRoom = (): JSX.Element => {
 
       return null;
     },
-    [isRoomOwner, setPopup, setRatingSummary, startJudgmentPolling]
+    [isRoomOwner, setPopup, setRatingSummary, startJudgmentPolling, topic]
   );
 
   // Log message history, collect transcripts, and send to backend

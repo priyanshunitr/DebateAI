@@ -10,6 +10,7 @@ type DebateTranscript struct {
 	RoomID      string            `bson:"roomId" json:"roomId"`
 	Role        string            `bson:"role" json:"role"`
 	Email       string            `bson:"email" json:"email"`
+	Topic       string            `bson:"topic,omitempty" json:"topic,omitempty"`
 	Transcripts map[string]string `bson:"transcripts" json:"transcripts"`
 	CreatedAt   time.Time         `bson:"createdAt" json:"createdAt"`
 	UpdatedAt   time.Time         `bson:"updatedAt" json:"updatedAt"`

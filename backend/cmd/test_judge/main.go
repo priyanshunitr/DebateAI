@@ -30,7 +30,7 @@ func main() {
 		"closingAgainst":       "In closing, the proposal ignores key risks. The safer choice is to reject it.",
 	}
 
-	result := services.JudgeDebateHumanVsHuman(sample)
+	result := services.JudgeDebateHumanVsHuman("Should governments adopt the proposed policy?", sample)
 	fmt.Println("Judgment Result:")
 	fmt.Println(result)
 }
