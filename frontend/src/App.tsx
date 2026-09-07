@@ -15,6 +15,8 @@ import DebateRoom from './Pages/DebateRoom';
 import OnlineDebateRoom from './Pages/OnlineDebateRoom';
 import StrengthenArgument from './Pages/StrengthenArgument';
 import SpeechTest from './Pages/SpeechTest';
+import PrivacyPolicy from './Pages/PrivacyPolicy';
+import TermsOfService from './Pages/TermsOfService';
 // Layout
 import Layout from './components/Layout';
 import CoachPage from './Pages/CoachPage';
@@ -67,6 +69,8 @@ function AppRoutes() {
       {/* Public routes with layout */}
       <Route element={<Layout />}>
         <Route path='about' element={<About />} />
+        <Route path='privacy-policy' element={<PrivacyPolicy />} />
+        <Route path='terms-of-service' element={<TermsOfService />} />
       </Route>
 
       {/* Protected routes with layout */}

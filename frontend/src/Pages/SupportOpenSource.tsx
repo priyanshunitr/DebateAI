@@ -114,7 +114,7 @@ const SupportOpenSource = () => {
             description="Join the developer community and help improve DebateAI with your technical skills."
             buttonText="Contribution Guide"
             hoverType="orange"
-            onClick={() => window.open('https://github.com/AOSSIE-Org/DebateAI/blob/master/CONTRIBUTING.md', '_blank')}
+            onClick={() => window.open('https://github.com/AOSSIE-Org/DebateAI/blob/main/README.md#contribution-guidelines', '_blank')}
           />
           <SupportCard 
             icon={<Bug className="w-6 h-6" />}
